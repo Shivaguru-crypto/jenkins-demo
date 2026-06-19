@@ -1,57 +1,88 @@
 pipeline {
     agent any
 
+    environment {
+        IMAGE_NAME = 'flask-jenkins-app'
+        CONTAINER_NAME = 'flask-running'
+        APP_PORT = '5000'
+    }
+
     stages {
         stage('Checkout') {
             steps {
-                echo '📥 Pulling latest code from GitHub...'
+                echo '📥 Pulling code from GitHub...'
                 checkout scm
             }
         }
 
         stage('Run Tests') {
             steps {
-                echo '🧪 Running automated tests...'
+                echo '🧪 Running tests before building Docker image...'
                 sh '''
-                    cd $WORKSPACE
                     python3 -m pytest test_app.py -v
                 '''
             }
         }
 
-        stage('Deploy Flask App') {
+        stage('Build Docker Image') {
             steps {
-                echo '🚀 Deploying Flask...'
+                echo '🐳 Building Docker image...'
                 sh '''
-                    pkill -f "python3 app.py" || true
-                    sleep 2
-                    cd $WORKSPACE
-                    nohup python3 app.py > flask.log 2>&1 &
-                    echo $! > flask.pid
-                    sleep 3
-                    echo "✅ Flask PID: $(cat flask.pid)"
+                    docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest
+                    echo "✅ Docker image built: ${IMAGE_NAME}:${BUILD_NUMBER}"
+                    docker images | grep ${IMAGE_NAME}
                 '''
             }
         }
 
-        stage('Verify') {
+        stage('Stop Old Container') {
             steps {
-                echo '🌐 Verifying Flask is live...'
+                echo '🛑 Stopping old container if running...'
                 sh '''
-                    sleep 2
+                    docker stop ${CONTAINER_NAME} || true
+                    docker rm ${CONTAINER_NAME} || true
+                    echo "✅ Old container removed"
+                '''
+            }
+        }
+
+        stage('Run New Container') {
+            steps {
+                echo '🚀 Starting new Docker container...'
+                sh '''
+                    docker run -d \
+                        --name ${CONTAINER_NAME} \
+                        -p ${APP_PORT}:5000 \
+                        --restart unless-stopped \
+                        ${IMAGE_NAME}:latest
+                    echo "✅ Container started!"
+                    docker ps | grep ${CONTAINER_NAME}
+                '''
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                echo '🌐 Verifying container is responding...'
+                sh '''
+                    sleep 3
                     curl -s http://localhost:5000/ | python3 -m json.tool
                     curl -s http://localhost:5000/health | python3 -m json.tool
-                    echo "✅ Flask is LIVE on port 5000!"
+                    echo "✅ Flask running inside Docker on port 5000!"
                 '''
             }
         }
     }
 
     post {
-        success { echo '🎉 Flask deployed and all tests passed!' }
+        success {
+            echo '🎉 Docker deployment successful!'
+            sh 'docker ps | grep flask'
+        }
         failure {
-            sh 'cat $WORKSPACE/flask.log || true'
-            echo '❌ Build failed — check logs above!'
+            echo '❌ Pipeline failed!'
+            sh 'docker logs ${CONTAINER_NAME} || true'
         }
     }
 }
