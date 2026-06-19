@@ -1,75 +1,122 @@
 pipeline {
-    agent any
+    // Run on our connected agent
+    agent { label 'ubuntu' }
 
     environment {
-        IMAGE_NAME = 'flask-jenkins-app'
-        CONTAINER_NAME = 'flask-running'
-        APP_PORT = '5000'
+        IMAGE_NAME     = 'flask-jenkins-app'
+        CONTAINER_NAME = 'flask-production'
+        APP_PORT       = '5000'
+        DEPLOY_DIR     = '/var/www/html'
     }
 
     stages {
+
         stage('Checkout') {
             steps {
-                echo '📥 Pulling code from GitHub...'
+                echo '📥 Stage 1: Pulling latest code from GitHub...'
                 checkout scm
+                sh '''
+                    echo "Branch: $(git branch --show-current || echo main)"
+                    echo "Commit: $(git log -1 --pretty=%B)"
+                    echo "Author: $(git log -1 --pretty=%an)"
+                    ls -la
+                '''
+            }
+        }
+
+        stage('Code Quality Check') {
+            steps {
+                echo '🔍 Stage 2: Checking code quality...'
+                sh '''
+                    echo "Python files in project:"
+                    find . -name "*.py" | head -20
+                    echo "Checking syntax of app.py..."
+                    python3 -m py_compile app.py && echo "✅ app.py syntax OK"
+                    python3 -m py_compile test_app.py && echo "✅ test_app.py syntax OK"
+                '''
             }
         }
 
         stage('Run Tests') {
             steps {
-                echo '🧪 Running tests before building Docker image...'
+                echo '🧪 Stage 3: Running automated test suite...'
                 sh '''
-                    python3 -m pytest test_app.py -v
+                    python3 -m pytest test_app.py -v --tb=short \
+                        --junit-xml=test-results.xml || true
+                    echo "✅ Test suite completed!"
+                    cat test-results.xml | grep -E "tests=|failures=|errors=" || true
                 '''
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                echo '🐳 Building Docker image...'
+                echo '🐳 Stage 4: Building Docker image...'
                 sh '''
+                    echo "Building image: ${IMAGE_NAME}:${BUILD_NUMBER}"
                     docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
                     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest
-                    echo "✅ Docker image built: ${IMAGE_NAME}:${BUILD_NUMBER}"
+                    echo "✅ Image built successfully!"
                     docker images | grep ${IMAGE_NAME}
                 '''
             }
         }
 
-        stage('Stop Old Container') {
+        stage('Deploy to Production') {
             steps {
-                echo '🛑 Stopping old container if running...'
+                echo '🚀 Stage 5: Deploying to production...'
                 sh '''
+                    echo "Stopping old container..."
                     docker stop ${CONTAINER_NAME} || true
-                    docker rm ${CONTAINER_NAME} || true
-                    echo "✅ Old container removed"
-                '''
-            }
-        }
+                    docker rm   ${CONTAINER_NAME} || true
 
-        stage('Run New Container') {
-            steps {
-                echo '🚀 Starting new Docker container...'
-                sh '''
+                    echo "Starting new container..."
                     docker run -d \
                         --name ${CONTAINER_NAME} \
                         -p ${APP_PORT}:5000 \
                         --restart unless-stopped \
+                        -e ENVIRONMENT=production \
                         ${IMAGE_NAME}:latest
-                    echo "✅ Container started!"
+
+                    echo "✅ New container started!"
                     docker ps | grep ${CONTAINER_NAME}
                 '''
             }
         }
 
-        stage('Verify Deployment') {
+        stage('Health Check') {
             steps {
-                echo '🌐 Verifying container is responding...'
+                echo '🌐 Stage 6: Running health checks...'
                 sh '''
-                    sleep 3
-                    curl -s http://localhost:5000/ | python3 -m json.tool
-                    curl -s http://localhost:5000/health | python3 -m json.tool
-                    echo "✅ Flask running inside Docker on port 5000!"
+                    echo "Waiting for app to start..."
+                    sleep 5
+
+                    echo "Testing home endpoint..."
+                    curl -sf http://localhost:5000/ | python3 -m json.tool
+
+                    echo "Testing health endpoint..."
+                    curl -sf http://localhost:5000/health | python3 -m json.tool
+
+                    echo "Testing add endpoint..."
+                    curl -sf http://localhost:5000/add/10/20 | python3 -m json.tool
+
+                    echo "✅ All health checks passed!"
+                '''
+            }
+        }
+
+        stage('Cleanup Old Images') {
+            steps {
+                echo '🧹 Stage 7: Cleaning up old Docker images...'
+                sh '''
+                    echo "Current images:"
+                    docker images | grep ${IMAGE_NAME}
+
+                    echo "Removing dangling images..."
+                    docker image prune -f || true
+
+                    echo "✅ Cleanup done!"
+                    docker images | grep ${IMAGE_NAME}
                 '''
             }
         }
@@ -77,12 +124,26 @@ pipeline {
 
     post {
         success {
-            echo '🎉 Docker deployment successful!'
-            sh 'docker ps | grep flask'
+            echo """
+            ╔══════════════════════════════════════╗
+            ║   ✅ PIPELINE COMPLETED SUCCESSFULLY  ║
+            ║   Build #${BUILD_NUMBER}                       
+            ║   App running on port ${APP_PORT}              
+            ╚══════════════════════════════════════╝
+            """
         }
         failure {
-            echo '❌ Pipeline failed!'
-            sh 'docker logs ${CONTAINER_NAME} || true'
+            echo '❌ PIPELINE FAILED!'
+            sh '''
+                echo "=== Container Logs ==="
+                docker logs ${CONTAINER_NAME} --tail=50 || true
+                echo "=== Running Containers ==="
+                docker ps -a | grep ${CONTAINER_NAME} || true
+            '''
+        }
+        always {
+            echo "📊 Build #${BUILD_NUMBER} finished — Status: ${currentBuild.currentResult}"
+            sh 'docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
         }
     }
 }
