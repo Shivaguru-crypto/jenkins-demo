@@ -9,24 +9,12 @@ pipeline {
             }
         }
 
-        stage('Setup Python Environment') {
-            steps {
-                echo '🐍 Setting up Python...'
-                sh '''
-                    python3 -m venv venv
-                    . venv/bin/activate
-                    pip install flask pytest
-                    echo "✅ Dependencies installed!"
-                '''
-            }
-        }
-
         stage('Run Tests') {
             steps {
                 echo '🧪 Running automated tests...'
                 sh '''
-                    . venv/bin/activate
-                    pytest test_app.py -v
+                    cd $WORKSPACE
+                    python3 -m pytest test_app.py -v
                 '''
             }
         }
@@ -37,7 +25,7 @@ pipeline {
                 sh '''
                     pkill -f "python3 app.py" || true
                     sleep 2
-                    . venv/bin/activate
+                    cd $WORKSPACE
                     nohup python3 app.py > flask.log 2>&1 &
                     echo $! > flask.pid
                     sleep 3
@@ -51,19 +39,19 @@ pipeline {
                 echo '🌐 Verifying Flask is live...'
                 sh '''
                     sleep 2
-                    curl -s http://localhost:5000/
-                    curl -s http://localhost:5000/health
-                    echo "✅ Flask is LIVE!"
+                    curl -s http://localhost:5000/ | python3 -m json.tool
+                    curl -s http://localhost:5000/health | python3 -m json.tool
+                    echo "✅ Flask is LIVE on port 5000!"
                 '''
             }
         }
     }
 
     post {
-        success { echo '🎉 Flask deployed successfully!' }
+        success { echo '🎉 Flask deployed and all tests passed!' }
         failure {
-            sh 'cat flask.log || true'
-            echo '❌ Build failed!'
+            sh 'cat $WORKSPACE/flask.log || true'
+            echo '❌ Build failed — check logs above!'
         }
     }
 }
