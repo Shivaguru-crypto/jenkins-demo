@@ -1,37 +1,69 @@
 pipeline {
     agent any
+
     stages {
         stage('Checkout') {
             steps {
-                echo '✅ Stage 1: Code checked out from GitHub'
+                echo '📥 Pulling latest code from GitHub...'
+                checkout scm
             }
         }
-        stage('Build') {
+
+        stage('Setup Python Environment') {
             steps {
-                echo '🔨 Stage 2: Building the project...'
-                sh 'echo "Build date: $(date)"'
-                sh 'echo "Running on: $(hostname)"'
+                echo '🐍 Setting up Python...'
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install flask pytest
+                    echo "✅ Dependencies installed!"
+                '''
             }
         }
-        stage('Test') {
+
+        stage('Run Tests') {
             steps {
-                echo '🧪 Stage 3: Running tests...'
-                sh 'echo "All tests passed!"'
+                echo '🧪 Running automated tests...'
+                sh '''
+                    . venv/bin/activate
+                    pytest test_app.py -v
+                '''
             }
         }
-        stage('Deploy') {
+
+        stage('Deploy Flask App') {
             steps {
-                echo '🚀 Stage 4: Deploying application...'
-                sh 'echo "Deployed successfully at $(date)"'
+                echo '🚀 Deploying Flask...'
+                sh '''
+                    pkill -f "python3 app.py" || true
+                    sleep 2
+                    . venv/bin/activate
+                    nohup python3 app.py > flask.log 2>&1 &
+                    echo $! > flask.pid
+                    sleep 3
+                    echo "✅ Flask PID: $(cat flask.pid)"
+                '''
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                echo '🌐 Verifying Flask is live...'
+                sh '''
+                    sleep 2
+                    curl -s http://localhost:5000/
+                    curl -s http://localhost:5000/health
+                    echo "✅ Flask is LIVE!"
+                '''
             }
         }
     }
+
     post {
-        success {
-            echo '✅ Pipeline completed SUCCESSFULLY!'
-        }
+        success { echo '🎉 Flask deployed successfully!' }
         failure {
-            echo '❌ Pipeline FAILED! Check logs.'
+            sh 'cat flask.log || true'
+            echo '❌ Build failed!'
         }
     }
 }
