@@ -1,6 +1,6 @@
 pipeline {
     // Run on our connected agent
-    agent { label 'ubuntu' }
+    agent any
 
     environment {
         IMAGE_NAME     = 'flask-jenkins-app'
