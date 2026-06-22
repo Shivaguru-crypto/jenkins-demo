@@ -94,7 +94,7 @@ View build: ${BUILD_URL}
 
         failure {
             // ❌ EMAIL on failure
-            mail to: "${NOTIFY_EMAIL}",
+            mail to: "shivaguru1207@gmail.com",
                  subject: "❌ Jenkins Build #${BUILD_NUMBER} FAILED — ${JOB_NAME}",
                  body: """
 Build FAILED!
