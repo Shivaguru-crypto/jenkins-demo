@@ -64,11 +64,26 @@ pipeline {
     }
 
     post {
+        always {
+            echo "📊 Build #${BUILD_NUMBER} status: ${currentBuild.currentResult}"
+        }
         success {
-            // ✅ EMAIL on success
-            mail to: "${NOTIFY_EMAIL}",
-                 subject: "✅ Jenkins Build #${BUILD_NUMBER} PASSED — ${JOB_NAME}",
-                 body: """
+            echo '🎉 PIPELINE COMPLETED SUCCESSFULLY!'
+            sh """
+                curl -X POST -H 'Content-type: application/json' \
+                --data '{"text":"✅ *SUCCESS:* Build #${BUILD_NUMBER} of Flask App is live on Port 5000!"}' \
+                https://hooks.slack.com/services/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
+            """
+        }
+        failure {
+            echo '❌ PIPELINE FAILED — check logs above!'
+            sh """
+                curl -X POST -H 'Content-type: application/json' \
+                --data '{"text":"❌ *FAILED:* Build #${BUILD_NUMBER} broke! Someone check the Jenkins logs."}' \
+                https://hooks.slack.com/services/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
+            """
+        }
+    }
 Build SUCCESS!
 
 Job:    ${JOB_NAME}
