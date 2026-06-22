@@ -5,7 +5,7 @@ pipeline {
         IMAGE_NAME     = 'flask-jenkins-app'
         CONTAINER_NAME = 'flask-production'
         APP_PORT       = '5000'
-        NOTIFY_EMAIL   = 'your-email@gmail.com'
+        NOTIFY_EMAIL   = 'shivaguru1207@gmail.com'
     }
 
     stages {
