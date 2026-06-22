@@ -6,7 +6,6 @@ pipeline {
         CONTAINER_NAME = 'flask-production'
         APP_PORT       = '5000'
         NOTIFY_EMAIL   = 'shivaguru1207@gmail.com'
-        SLACK_URL      = 'https://hooks.slack.com/services/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'
     }
 
     stages {
@@ -40,7 +39,6 @@ pipeline {
                 echo '🐳 Stage 4: Building Docker image...'
                 sh 'docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .'
                 sh 'docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest'
-                sh 'docker images | grep ${IMAGE_NAME}'
             }
         }
 
@@ -76,39 +74,47 @@ pipeline {
         success {
             echo '🎉 BUILD PASSED!'
 
+            // Email notification
             mail(
-                to: 'shivaguru1207@gmail.com',
+                to: "${NOTIFY_EMAIL}",
                 subject: "✅ Build #${BUILD_NUMBER} PASSED — ${JOB_NAME}",
                 body: "Build SUCCESS!\n\nApp URL: http://localhost:5000\nBuild URL: ${BUILD_URL}"
             )
 
-            sh '''
-                curl -s -X POST \
-                -H 'Content-type: application/json' \
-                -d '{"text":"✅ BUILD PASSED! Flask app is LIVE on port 5000!"}' \
-                https://hooks.slack.com/services/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
-            '''
+            // Slack — webhook URL pulled from Jenkins Credentials safely
+            withCredentials([string(credentialsId: 'slack-webhook-url', variable: 'SLACK_URL')]) {
+                sh '''
+                    curl -s -X POST \
+                    -H 'Content-type: application/json' \
+                    -d '{"text":"✅ BUILD PASSED! Flask app is LIVE on port 5000!"}' \
+                    $SLACK_URL
+                '''
+            }
         }
 
         failure {
             echo '❌ BUILD FAILED!'
 
+            // Email notification
             mail(
-                to: 'shivaguru1207@gmail.com',
+                to: "${NOTIFY_EMAIL}",
                 subject: "❌ Build #${BUILD_NUMBER} FAILED — ${JOB_NAME}",
                 body: "Build FAILED!\n\nCheck logs: ${BUILD_URL}console"
             )
 
-            sh '''
-                curl -s -X POST \
-                -H 'Content-type: application/json' \
-                -d '{"text":"❌ BUILD FAILED! Check Jenkins logs immediately!"}' \
-                https://hooks.slack.com/services/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
-            '''
+            // Slack — webhook URL pulled from Jenkins Credentials safely
+            withCredentials([string(credentialsId: 'slack-webhook-url', variable: 'SLACK_URL')]) {
+                sh '''
+                    curl -s -X POST \
+                    -H 'Content-type: application/json' \
+                    -d '{"text":"❌ BUILD FAILED! Check Jenkins logs immediately!"}' \
+                    $SLACK_URL
+                '''
+            }
         }
 
         always {
-            echo "📊 Build #${BUILD_NUMBER} finished — ${currentBuild.currentResult}"
+            echo "📊 Build #${BUILD_NUMBER} — ${currentBuild.currentResult}"
         }
     }
 }
