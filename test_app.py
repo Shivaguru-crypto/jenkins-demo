@@ -27,3 +27,11 @@ def test_add(client):
     data = response.get_json()
     assert data['result'] == 7
     print("✅ Add route test passed!")
+
+def test_version(client):
+    response = client.get('/version')
+    assert response.status_code == 200
+    data = response.get_json()
+    assert 'version' in data
+    assert 'environment' in data
+    print("✅ Version route test passed!")
