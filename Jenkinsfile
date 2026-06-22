@@ -6,7 +6,7 @@ pipeline {
         CONTAINER_NAME = 'flask-production'
         APP_PORT       = '5000'
         NOTIFY_EMAIL   = 'shivaguru1207@gmail.com'
-        SLACK_URL      = 'https://hooks.slack.com/services/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'
+        SLACK_URL      = 'https://hooks.slack.com/services/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'
     }
 
     stages {
