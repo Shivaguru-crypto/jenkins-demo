@@ -69,6 +69,13 @@ pipeline {
         }
         success {
             echo '🎉 PIPELINE COMPLETED SUCCESSFULLY!'
+            
+            // 1. Send Email
+            mail to: "${NOTIFY_EMAIL}",
+                 subject: "✅ Jenkins Build #${BUILD_NUMBER} PASSED — ${JOB_NAME}",
+                 body: "Build SUCCESS!\n\nApp URL: http://localhost:5000\nView build: ${BUILD_URL}"
+
+            // 2. Send Slack Ping
             sh """
                 curl -X POST -H 'Content-type: application/json' \
                 --data '{"text":"✅ *SUCCESS:* Build #${BUILD_NUMBER} of Flask App is live on Port 5000!"}' \
@@ -77,65 +84,18 @@ pipeline {
         }
         failure {
             echo '❌ PIPELINE FAILED — check logs above!'
+            
+            // 1. Send Email
+            mail to: "${NOTIFY_EMAIL}",
+                 subject: "❌ Jenkins Build #${BUILD_NUMBER} FAILED — ${JOB_NAME}",
+                 body: "Build FAILED!\n\nCheck the console output for errors:\n${BUILD_URL}console"
+
+            // 2. Send Slack Ping
             sh """
                 curl -X POST -H 'Content-type: application/json' \
                 --data '{"text":"❌ *FAILED:* Build #${BUILD_NUMBER} broke! Someone check the Jenkins logs."}' \
                 https://hooks.slack.com/services/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
             """
-        }
-    }
-Build SUCCESS!
-
-Job:    ${JOB_NAME}
-Build:  #${BUILD_NUMBER}
-Status: PASSED ✅
-
-Changes: ${env.GIT_COMMIT}
-App URL: http://localhost:5000
-
-View build: ${BUILD_URL}
-                 """
-
-            // ✅ SLACK on success
-            slackSend(
-                color: 'good',
-                message: """✅ *BUILD PASSED* — ${JOB_NAME} #${BUILD_NUMBER}
-- Status: SUCCESS
-- App: http://localhost:5000/health
-- Build: ${BUILD_URL}
-- Commit: ${env.GIT_COMMIT?.take(7)}"""
-            )
-        }
-
-        failure {
-            // ❌ EMAIL on failure
-            mail to: "shivaguru1207@gmail.com",
-                 subject: "❌ Jenkins Build #${BUILD_NUMBER} FAILED — ${JOB_NAME}",
-                 body: """
-Build FAILED!
-
-Job:    ${JOB_NAME}
-Build:  #${BUILD_NUMBER}
-Status: FAILED ❌
-
-Check the console output for errors:
-${BUILD_URL}console
-
-Fix the issue and push again.
-                 """
-
-            // ❌ SLACK on failure
-            slackSend(
-                color: 'danger',
-                message: """❌ *BUILD FAILED* — ${JOB_NAME} #${BUILD_NUMBER}
-- Status: FAILURE
-- Check logs: ${BUILD_URL}console
-- Fix and push again!"""
-            )
-        }
-
-        always {
-            echo "📊 Build #${BUILD_NUMBER} — ${currentBuild.currentResult}"
         }
     }
 }
