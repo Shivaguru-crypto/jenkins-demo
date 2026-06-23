@@ -42,6 +42,9 @@ def version():
 def simulate_error():
     # This route simulates a broken deployment for rollback testing
     return jsonify({"error": "Simulated failure!"}), 500
+    
+def broken_syntax
+# Missing colon — syntax error
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=9999, debug=False)  # WRONG PORT — rollback test
