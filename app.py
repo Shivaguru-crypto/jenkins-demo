@@ -44,4 +44,4 @@ def simulate_error():
     return jsonify({"error": "Simulated failure!"}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=9999, debug=False)  # WRONG PORT — rollback test
