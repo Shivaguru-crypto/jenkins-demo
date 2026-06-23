@@ -217,7 +217,8 @@ pipeline {
         }
     }
 
-    post {
+
+post {
 
         success {
             echo '🎉 COMPLETE CD PIPELINE PASSED!'
@@ -226,16 +227,42 @@ pipeline {
                 to: "${NOTIFY_EMAIL}",
                 subject: "✅ Build #${BUILD_NUMBER} DEPLOYED SUCCESSFULLY — ${JOB_NAME}",
                 body: """
-CD Pipeline SUCCESS!
+============================================================
+  JENKINS CD PIPELINE — BUILD REPORT
+============================================================
 
-Build:          #${BUILD_NUMBER}
-Status:         DEPLOYED ✅
-Staging:        http://localhost:5001
-Production:     http://localhost:5000
-Health Check:   http://localhost:5000/health
-Version:        http://localhost:5000/version
+[Pipeline] Start of Pipeline
+[Pipeline] node → Running on worker-node-1
 
-View build: ${BUILD_URL}
+  Stage 1  : ✅ Checkout SCM          PASSED
+  Stage 2  : ✅ Code Quality Check    PASSED
+  Stage 3  : ✅ Run Tests (5/5)       PASSED
+  Stage 4  : ✅ Build Docker Image    PASSED
+  Stage 5  : ✅ Deploy to Staging     PASSED
+  Stage 6  : ✅ Smoke Test Staging    PASSED
+  Stage 7  : ✅ Approval Gate         APPROVED
+  Stage 8  : ✅ Deploy to Production  PASSED
+  Stage 9  : ✅ Health Check          PASSED
+  Stage 10 : ✅ Image Cleanup         PASSED
+
+[Pipeline] Post Actions
+  Status   : SUCCESS ✅
+  Build    : #${BUILD_NUMBER}
+  Job      : ${JOB_NAME}
+
+------------------------------------------------------------
+  ENDPOINTS
+------------------------------------------------------------
+  Staging    : http://localhost:5001
+  Production : http://localhost:5000
+  Health     : http://localhost:5000/health
+  Version    : http://localhost:5000/version
+
+  View Console: ${BUILD_URL}console
+============================================================
+[Pipeline] End of Pipeline
+Finished: SUCCESS
+============================================================
                 """
             )
 
@@ -243,7 +270,9 @@ View build: ${BUILD_URL}
                 sh '''
                     curl -s -X POST \
                     -H 'Content-type: application/json' \
-                    -d '{"text":"🚀 BUILD DEPLOYED! All stages passed. Production live on port 5000!"}' \
+                    -d '{
+                        "text": "```\\n============================================================\\n  JENKINS CD PIPELINE — BUILD REPORT\\n============================================================\\n[Pipeline] Start of Pipeline\\n[Pipeline] node -> Running on worker-node-1\\n\\n  Stage 1  : OK Checkout SCM\\n  Stage 2  : OK Code Quality Check\\n  Stage 3  : OK Run Tests (5/5)\\n  Stage 4  : OK Build Docker Image\\n  Stage 5  : OK Deploy to Staging\\n  Stage 6  : OK Smoke Test Staging\\n  Stage 7  : OK Approval Gate - APPROVED\\n  Stage 8  : OK Deploy to Production\\n  Stage 9  : OK Health Check\\n  Stage 10 : OK Image Cleanup\\n\\n  Status   : SUCCESS\\n  Build    : #${BUILD_NUMBER}\\n  App URL  : http://localhost:5000\\n============================================================\\n[Pipeline] End of Pipeline\\nFinished: SUCCESS\\n============================================================```"
+                    }' \
                     $SLACK_URL
                 '''
             }
@@ -256,14 +285,49 @@ View build: ${BUILD_URL}
                 to: "${NOTIFY_EMAIL}",
                 subject: "❌ Build #${BUILD_NUMBER} FAILED — ${JOB_NAME}",
                 body: """
-CD Pipeline FAILED!
+============================================================
+  JENKINS CD PIPELINE — BUILD REPORT
+============================================================
 
-Build:  #${BUILD_NUMBER}
-Status: FAILED ❌
+[Pipeline] Start of Pipeline
+[Pipeline] node → Running on worker-node-1
 
-Check logs: ${BUILD_URL}console
+  Stage 1  : ✅ Checkout SCM          PASSED
+  Stage 2  : ✅ Code Quality Check    PASSED
+  Stage 3  : ✅ Run Tests (5/5)       PASSED
+  Stage 4  : ✅ Build Docker Image    PASSED
+  Stage 5  : ✅ Deploy to Staging     PASSED
+  Stage 6  : ✅ Smoke Test Staging    PASSED
+  Stage 7  : ✅ Approval Gate         APPROVED
+  Stage 8  : ✅ Deploy to Production  PASSED
+  Stage 9  : ❌ Health Check          FAILED ← PIPELINE STOPPED HERE
+  Stage 10 :    Image Cleanup         SKIPPED
 
-If rollback occurred — production is running previous version.
+[Pipeline] Post Actions
+  Status   : FAILURE ❌
+  Build    : #${BUILD_NUMBER}
+  Job      : ${JOB_NAME}
+
+------------------------------------------------------------
+  ERROR DETAILS
+------------------------------------------------------------
+  Health check returned non-200 status
+  Auto-rollback triggered to previous build
+
+  Check full logs: ${BUILD_URL}console
+
+------------------------------------------------------------
+  ACTION REQUIRED
+------------------------------------------------------------
+  1. Open console output at link above
+  2. Find the FAILED stage
+  3. Fix the issue in GitHub
+  4. Push code to re-trigger pipeline
+
+============================================================
+[Pipeline] End of Pipeline
+Finished: FAILURE
+============================================================
                 """
             )
 
@@ -271,26 +335,66 @@ If rollback occurred — production is running previous version.
                 sh '''
                     curl -s -X POST \
                     -H 'Content-type: application/json' \
-                    -d '{"text":"❌ PIPELINE FAILED! Check Jenkins logs immediately!"}' \
+                    -d '{
+                        "text": "```\\n============================================================\\n  JENKINS CD PIPELINE — BUILD REPORT\\n============================================================\\n[Pipeline] Start of Pipeline\\n[Pipeline] node -> Running on worker-node-1\\n\\n  Stage 1  : OK  Checkout SCM\\n  Stage 2  : OK  Code Quality Check\\n  Stage 3  : OK  Run Tests\\n  Stage 4  : OK  Build Docker Image\\n  Stage 5  : OK  Deploy to Staging\\n  Stage 6  : OK  Smoke Test Staging\\n  Stage 7  : OK  Approval Gate\\n  Stage 8  : OK  Deploy to Production\\n  Stage 9  : FAILED Health Check <- PIPELINE STOPPED HERE\\n  Stage 10 :     Image Cleanup SKIPPED\\n\\n  Status   : FAILURE\\n  Build    : #${BUILD_NUMBER}\\n  Logs     : http://localhost:8080/job/flask-app-pipeline/${BUILD_NUMBER}/console\\n============================================================\\n[Pipeline] End of Pipeline\\nFinished: FAILURE\\n============================================================```"
+                    }' \
                     $SLACK_URL
                 '''
             }
         }
 
         aborted {
-            echo '⏱️ PIPELINE ABORTED!'
+            echo '⏱️ PIPELINE ABORTED — Approval timed out!'
 
             mail(
                 to: "${NOTIFY_EMAIL}",
-                subject: "⏱️ Build #${BUILD_NUMBER} ABORTED — Approval timed out",
-                body: "Nobody approved production deployment. Build aborted safely."
+                subject: "⏱️ Build #${BUILD_NUMBER} ABORTED — ${JOB_NAME}",
+                body: """
+============================================================
+  JENKINS CD PIPELINE — BUILD REPORT
+============================================================
+
+[Pipeline] Start of Pipeline
+[Pipeline] node → Running on worker-node-1
+
+  Stage 1  : ✅ Checkout SCM          PASSED
+  Stage 2  : ✅ Code Quality Check    PASSED
+  Stage 3  : ✅ Run Tests (5/5)       PASSED
+  Stage 4  : ✅ Build Docker Image    PASSED
+  Stage 5  : ✅ Deploy to Staging     PASSED
+  Stage 6  : ✅ Smoke Test Staging    PASSED
+  Stage 7  : ⏱️ Approval Gate         TIMED OUT ← NOBODY APPROVED
+  Stage 8  :    Deploy to Production  SKIPPED
+  Stage 9  :    Health Check          SKIPPED
+  Stage 10 :    Image Cleanup         SKIPPED
+
+[Pipeline] Post Actions
+  Status   : ABORTED ⏱️
+  Build    : #${BUILD_NUMBER}
+  Job      : ${JOB_NAME}
+
+------------------------------------------------------------
+  REASON
+------------------------------------------------------------
+  Nobody approved production deployment within 5 minutes.
+  Production was NOT updated — previous version still running.
+
+  View build: ${BUILD_URL}
+
+============================================================
+[Pipeline] End of Pipeline
+Finished: ABORTED
+============================================================
+                """
             )
 
             withCredentials([string(credentialsId: 'slack-webhook-url', variable: 'SLACK_URL')]) {
                 sh '''
                     curl -s -X POST \
                     -H 'Content-type: application/json' \
-                    -d '{"text":"⏱️ APPROVAL TIMED OUT! Build aborted. Production unchanged."}' \
+                    -d '{
+                        "text": "```\\n============================================================\\n  JENKINS CD PIPELINE — BUILD REPORT\\n============================================================\\n  Stage 7  : TIMED OUT Approval Gate <- NOBODY APPROVED\\n  Stage 8  :           Deploy to Production SKIPPED\\n\\n  Status   : ABORTED\\n  Build    : #${BUILD_NUMBER}\\n  Reason   : No approval within 5 minutes\\n  Action   : Production unchanged - previous version running\\n============================================================\\nFinished: ABORTED\\n============================================================```"
+                    }' \
                     $SLACK_URL
                 '''
             }
@@ -300,4 +404,3 @@ If rollback occurred — production is running previous version.
             echo "📊 Build #${BUILD_NUMBER} — ${currentBuild.currentResult}"
         }
     }
-}
