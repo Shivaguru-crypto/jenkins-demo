@@ -71,7 +71,7 @@ pipeline {
         stage('Smoke Test Staging') {
             steps {
                 echo '🔬 Stage 6: Smoke testing STAGING...'
-                sh 'sleep 5'
+                sh 'sleep 10'
                 sh 'curl -sf http://localhost:5001/health | python3 -m json.tool'
                 sh 'curl -sf http://localhost:5001/       | python3 -m json.tool'
                 sh 'curl -sf http://localhost:5001/version | python3 -m json.tool'
