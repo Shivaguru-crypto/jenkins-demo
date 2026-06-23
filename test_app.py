@@ -13,7 +13,7 @@ def test_home(client):
     data = response.get_json()
     assert data['status'] == 'running'
     assert 'build' in data
-    print("✅ Home route test passed!)
+    print("✅ Home route test passed!")
 
 def test_health(client):
     response = client.get('/health')
