@@ -5,12 +5,12 @@
 }
 
 body {
-    font-family: 'Segoe UI', sans-serif;
-    background-color: #ff0000;
+    background: #ff0000 !important;
     min-height: 100vh;
     display: flex;
     justify-content: center;
     align-items: center;
+    font-family: 'Segoe UI', sans-serif;
 }
 
 .card {
