@@ -1,9 +1,0 @@
-====================================
-  JENKINS AUTO-GENERATED BUILD INFO
-====================================
-  Last Build  : #22
-  Build Time  : Thursday 25 June 2026 04:49:47 PM IST
-  Node        : shivaguru
-  Status      : SUCCESS
-  Deployed to : http://localhost:5000
-====================================
