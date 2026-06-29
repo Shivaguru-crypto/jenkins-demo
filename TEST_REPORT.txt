@@ -1,8 +1,0 @@
-======================================
- JENKINS BOARD TEST REPORT
-======================================
-  Last Build  : #10
-  Build Time  : Monday 29 June 2026 02:43:22 PM IST
-  Board IP    : 192.168.11.173
-  Status      : PLACEHOLDER — real pin/function tests not yet implemented
-======================================
