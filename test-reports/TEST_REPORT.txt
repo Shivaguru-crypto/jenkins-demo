@@ -1,19 +1,19 @@
 ======================================
  JENKINS BOARD TEST REPORT
 ======================================
-  Build       : #26
-  Build Time  : Tuesday 30 June 2026 03:38:03 PM IST
+  Build       : #29
+  Build Time  : Tuesday 30 June 2026 04:38:31 PM IST
   Board IP    : 192.168.11.173
   Board User  : root
   Agent       : local-ssh-agent
-  Overall     : SUCCESS
+  Overall     : ABORTED
 
   Tests Run:
-  1. Board Reachable   : PASS
-  2. SSH Connection    : PASS
-  3. GPIO Discovery    : PASS
-  4. Pin Test          : PASS
-  5. Functional Test   : PASS
+  1. Board Reachable   : FAIL
+  2. SSH Connection    : FAIL
+  3. GPIO Discovery    : FAIL
+  4. Pin Test          : FAIL
+  5. Functional Test   : FAIL
 
   Full Excel report : test-reports/Board_Test_Report.xlsx
   Full raw logs     : test-logs/
