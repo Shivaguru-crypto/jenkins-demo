@@ -100,7 +100,7 @@ def _read_until(ser, markers, timeout, poke_newline_every=None, idle_auto_enter=
     return None, _safe_decode(buf)
 
 
-def _drain_briefly(ser, seconds=0.4):
+def _drain_briefly(ser, seconds=0.3):
     end = time.time() + seconds
     buf = b""
     while time.time() < end:
@@ -293,12 +293,12 @@ def cmd_push(args):
         time.sleep(0.2)
         _drain_briefly(ser, 0.2)
 
-        chunk_size = 48
+        chunk_size = 32
         for i in range(0, len(b64), chunk_size):
             chunk = b64[i:i + chunk_size]
             ser.write((f"printf '%s' '{chunk}' >> {remote_b64_path}\r\n").encode())
             ser.flush()
-            time.sleep(0.12)
+            time.sleep(0.15)
             _drain_briefly(ser, 0.08)
 
         verify_and_decode = (
@@ -335,12 +335,7 @@ def main():
     common.add_argument("--port", help="Direct port path, e.g. /dev/ttyUSB0")
     common.add_argument("--baud", type=int, default=115200)
     common.add_argument("--timeout", type=int, default=30, help="Command/transfer completion timeout (s)")
-    common.add_argument(
-        "--login-timeout",
-        type=int,
-        default=LOGIN_TIMEOUT_DEFAULT,
-        help=f"How long to wait for the board to boot and show a login/shell prompt (default: {LOGIN_TIMEOUT_DEFAULT}s).",
-    )
+    common.add_argument("--login-timeout", type=int, default=LOGIN_TIMEOUT_DEFAULT)
 
     p = argparse.ArgumentParser(parents=[common])
     sub = p.add_subparsers(dest="command", required=True)
