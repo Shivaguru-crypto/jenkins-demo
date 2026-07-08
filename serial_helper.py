@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-serial_helper.py — talk to a board over its FTDI USB-serial console instead of
-SSH/ngrok, since the boards have no network stack (no IP, no SSH port).
+serial_helper.py — talk to a board over its FTDI USB-serial console instead
+of SSH/ngrok, since the boards have no network stack (no IP, no SSH port).
 
 Subcommands:
   check  --port /dev/ttyUSB0 --baud 115200
@@ -19,9 +19,25 @@ Subcommands:
       then chmod +x's it and confirms it landed.
 
 Exit codes mirror what the Jenkinsfile expects: 0 = PASS, non-zero = FAIL.
+
+--- Reset-safety notes (added after Error 8) -------------------------------
+Some boards wire their hardware reset circuit to the DTR control line (same
+idea as an Arduino auto-reset circuit). Two separate things can trigger it:
+  1. Linux's default HUPCL setting drops DTR the instant a serial device is
+     CLOSED by any program.
+  2. Some USB-serial drivers assert/toggle DTR the instant a port is OPENED.
+open_port() below guards against both: it configures the Serial object with
+DTR held at a fixed level *before* physically opening the port, and disables
+HUPCL immediately after opening, via `stty -hupcl`.
+wake_shell() also now detects a `login:` prompt (which happens if a reset
+still occurs for any other reason) and logs back in automatically instead of
+silently sending commands into a login prompt.
+-----------------------------------------------------------------------------
 """
+
 import argparse
 import re
+import subprocess
 import sys
 import time
 
@@ -33,19 +49,56 @@ except ImportError:
 
 END_MARKER = "___CMD_DONE___"
 HEREDOC_MARKER = "___JENKINS_EOF___"
+BOARD_LOGIN_USER = "root"
+BOARD_LOGIN_PASSWORD = ""  # set this if your boards require a password
 
 
 def open_port(port, baud, timeout=5):
-    ser = serial.Serial(port, baudrate=int(baud), timeout=timeout)
+    # Build the Serial object WITHOUT opening it yet, so we can pin DTR to a
+    # known level before the physical open happens (avoids reset-on-open).
+    ser = serial.Serial()
+    ser.port = port
+    ser.baudrate = int(baud)
+    ser.timeout = timeout
+    ser.dtr = False   # hold DTR low before open — prevents a reset pulse on open
+    ser.rts = False
+    ser.open()
+
+    # Disable "hang up on close" at the OS level so closing this connection
+    # later (which happens after every single check/run/push call) doesn't
+    # drop DTR and reset the board.
+    try:
+        subprocess.run(["stty", "-F", port, "-hupcl"], check=False, capture_output=True)
+    except Exception:
+        pass  # non-fatal — worst case HUPCL stays enabled
+
     time.sleep(0.5)
     ser.reset_input_buffer()
     return ser
 
 
-def wake_shell(ser):
-    # Nudge the console so we're talking to a live shell, not a stale buffer.
+def wake_shell(ser, timeout=8):
+    """
+    Nudge the console and detect what state it's in. If it's sitting at a
+    login prompt (e.g. because a reset happened despite our precautions),
+    log back in automatically instead of leaving commands to be typed blindly
+    into a login prompt.
+    """
     ser.write(b"\r\n")
-    time.sleep(0.3)
+    time.sleep(0.5)
+    banner = ser.read(ser.in_waiting or 1).decode(errors="ignore")
+
+    if "login:" in banner.lower():
+        ser.write((BOARD_LOGIN_USER + "\n").encode())
+        time.sleep(1)
+        resp = ser.read(ser.in_waiting or 1).decode(errors="ignore")
+        if "password:" in resp.lower():
+            ser.write((BOARD_LOGIN_PASSWORD + "\n").encode())
+            time.sleep(1)
+            ser.read(ser.in_waiting or 1)
+        return
+
+    # Otherwise assume we're already at a shell prompt — clear any noise.
     ser.read(ser.in_waiting or 1)
 
 
@@ -92,7 +145,7 @@ def cmd_check(args):
         if "PING_OK" in out:
             print(f"✅ Serial console reachable on {args.port} @ {args.baud} baud")
             sys.exit(0)
-        print(f"❌ Port opened but no shell response on {args.port}")
+        print(f"❌ Port opened but no shell response on {args.port}\nRaw output: {out!r}")
         sys.exit(1)
     except Exception as e:
         print(f"❌ Could not open serial port {args.port}: {e}")
@@ -137,7 +190,7 @@ def cmd_push(args):
 
         if rc == 0 and "No such file" not in out:
             sys.exit(0)
-        print(f"❌ File did not land correctly on {args.remote_path}")
+        print(f"❌ File did not land correctly on {args.remote_path}\nRaw output: {out!r}")
         sys.exit(1)
     except Exception as e:
         print(f"❌ Serial push failed on {args.port}: {e}")
