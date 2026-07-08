@@ -1,44 +1,13 @@
 #!/usr/bin/env python3
 """
 serial_helper.py
-
-Talks to a board over a raw serial console (FTDI USB-serial, no network/SSH).
-
-Key problem this solves:
-    The board sits at a `login:` prompt. If you just write commands to the
-    serial port without first logging in, the board treats your bytes as
-    login-name input -> you get "Login incorrect" and garbage in the log,
-    which is exactly what the Jenkins console showed.
-
-Subcommands:
-    check   -- confirm the board is alive and reachable on the given port
-    run     -- log in (if needed), run one command, capture its output
-    push    -- log in (if needed), write a local file to the board using
-               a here-doc + base64, so binary-unsafe characters survive
-
-Usage:
-    python3 serial_helper.py check --port /dev/ttyUSB0 --baud 115200
-    python3 serial_helper.py run   --port /dev/ttyUSB0 --baud 115200 --cmd "uname -a"
-    python3 serial_helper.py push  --port /dev/ttyUSB0 --baud 115200 \
-        --local-file perip_test.sh --remote-path /tmp/perip_test.sh
-
-For scripts that block on `read -p "..."` prompts and can't be modified
-(e.g. an instructor-provided test script), add --auto-enter to `run`:
-    python3 serial_helper.py run --port /dev/ttyUSB0 --baud 115200 \
-        --cmd "/tmp/perip_test.sh" --timeout 400 --auto-enter --idle-seconds 4
-This sends a blank Enter whenever the board goes quiet for --idle-seconds,
-which is enough to let a `read` call return (with empty input) and the
-script continue, instead of hanging until Jenkins kills the stage.
-
-Also supports resolving a port from a udev serial number, so port numbers
-don't shift around when boards are unplugged/replugged:
-    python3 serial_helper.py check --serial FT8U9XYZ --baud 115200
 """
 
 import argparse
 import base64
 import glob
 import os
+import re
 import sys
 import time
 
@@ -49,54 +18,44 @@ except ImportError:
     sys.exit(1)
 
 
-def open_serial(port, baud):
-    """
-    Open a serial port WITHOUT the reset pulse most USB-serial adapters
-    normally send. `serial.Serial(port, baud)` opens and asserts DTR/RTS by
-    default in one step -- that transition is exactly the signal many
-    boards wire to their reset line (same trick as Arduino auto-reset).
-    That was causing boards to silently reboot every time we opened a new
-    connection (check -> run -> push -> run), losing shell state and even
-    wiping /tmp between a push and the following run.
-
-    Fix: build the Serial object unopened, force dtr/rts low FIRST, then
-    open -- so there's no edge on open. We still add a short settle delay
-    afterward in case a particular adapter/board resets on power-up
-    regardless (some do, in hardware, no way to avoid it from software) --
-    that delay just gives the reset a chance to finish before we start
-    talking, instead of racing it.
-    """
-    ser = serial.Serial()
-    ser.port = port
-    ser.baudrate = baud
-    ser.timeout = 1
-    ser.dtr = False
-    ser.rts = False
-    ser.open()
-    time.sleep(0.3)
-    ser.reset_input_buffer()
-    return ser
-
-
 BOARD_USER = os.environ.get("BOARD_USER", "root")
-BOARD_PASSWORD = os.environ.get("BOARD_PASSWORD", "")  # empty = no password expected
-
-# Boot/login time is a hardware property of the board, not something that
-# should shrink or grow with how long a particular command's output takes
-# to appear. Keep it fixed and separate from --timeout. Override with
-# --login-timeout if a board is unusually slow to boot.
+BOARD_PASSWORD = os.environ.get("BOARD_PASSWORD", "")
 LOGIN_TIMEOUT_DEFAULT = 60
 
-# Prompts we look for. Adjust SHELL_PROMPT to match your board's actual
-# prompt if it's not one of these (e.g. "root@rugged-board-a5d2x:~#").
 LOGIN_PROMPT_MARKERS = ["login:"]
 PASSWORD_PROMPT_MARKERS = ["password:", "Password:"]
 SHELL_PROMPT_MARKERS = ["# ", "$ ", "~# ", "~$ "]
 INCORRECT_LOGIN_MARKERS = ["Login incorrect", "incorrect password"]
 
 
+def open_serial(port, baud):
+    ser = serial.Serial()
+    ser.port = port
+    ser.baudrate = baud
+    ser.timeout = 0.5
+    ser.write_timeout = 5
+    ser.bytesize = serial.EIGHTBITS
+    ser.parity = serial.PARITY_NONE
+    ser.stopbits = serial.STOPBITS_ONE
+    ser.xonxoff = False
+    ser.rtscts = False
+    ser.dsrdtr = False
+    try:
+        ser.dtr = False
+        ser.rts = False
+    except Exception:
+        pass
+    ser.open()
+    time.sleep(0.5)
+    try:
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+    except Exception:
+        pass
+    return ser
+
+
 def get_port_by_serial(serial_number):
-    """Dynamically find the port path for a given serial number."""
     path = f"/dev/serial/by-id/*{serial_number}*"
     devices = glob.glob(path)
     if not devices:
@@ -104,56 +63,104 @@ def get_port_by_serial(serial_number):
     return os.path.realpath(devices[0])
 
 
+def _safe_decode(buf):
+    return buf.decode(errors="replace")
+
+
 def _read_until(ser, markers, timeout, poke_newline_every=None, idle_auto_enter=None):
-    """
-    Read from the serial port until one of `markers` shows up in the
-    accumulated buffer, or timeout elapses. Returns (matched_marker_or_None, buffer_text).
-
-    poke_newline_every: send a bare \\r\\n on a fixed cadence (used during
-        login, to re-print a prompt that hasn't appeared yet).
-
-    idle_auto_enter: if set (seconds), send a bare \\r\\n whenever NO new
-        bytes have arrived for that many seconds. This is what unblocks a
-        script that's sitting at a `read -p "..."` prompt: we don't need to
-        know what the script is asking -- an Enter with empty input is
-        enough to let a `read` call return and the script continue. Use
-        this only while running a script we're not allowed to modify
-        (e.g. perip_test.sh), not while waiting for a login prompt.
-    """
     end_time = time.time() + timeout
     buf = b""
     last_poke = time.time()
     last_data_time = time.time()
+
     while time.time() < end_time:
-        chunk = ser.read(ser.in_waiting or 1)
+        waiting = ser.in_waiting if hasattr(ser, "in_waiting") else 0
+        chunk = ser.read(waiting or 1)
+
         if chunk:
             buf += chunk
             last_data_time = time.time()
-        text = buf.decode(errors="replace")
-        for m in markers:
-            if m in text:
-                return m, text
-        if poke_newline_every and (time.time() - last_poke) > poke_newline_every:
+
+        text = _safe_decode(buf)
+        for marker in markers:
+            if marker in text:
+                return marker, text
+
+        now = time.time()
+
+        if poke_newline_every and (now - last_poke) >= poke_newline_every:
             ser.write(b"\r\n")
-            last_poke = time.time()
-        if idle_auto_enter and (time.time() - last_data_time) > idle_auto_enter:
+            ser.flush()
+            last_poke = now
+
+        if idle_auto_enter and (now - last_data_time) >= idle_auto_enter:
             ser.write(b"\r\n")
-            last_data_time = time.time()  # reset so we don't spam every loop tick
+            ser.flush()
+            last_data_time = now
+
         if not chunk:
             time.sleep(0.05)
-    return None, buf.decode(errors="replace")
+
+    return None, _safe_decode(buf)
+
+
+def _drain_briefly(ser, seconds=0.5):
+    end = time.time() + seconds
+    buf = b""
+    while time.time() < end:
+        waiting = ser.in_waiting if hasattr(ser, "in_waiting") else 0
+        chunk = ser.read(waiting or 1)
+        if chunk:
+            buf += chunk
+        else:
+            time.sleep(0.05)
+    return _safe_decode(buf)
+
+
+def _normalize_output(text):
+    text = text.replace("\r", "")
+    return text
+
+
+def _strip_command_echo(text, original_cmd, marker_tag):
+    lines = _normalize_output(text).splitlines()
+    cleaned = []
+    marker_re = re.compile(rf"{re.escape(marker_tag)}\s*(-?\d+)")
+    cmd_core = original_cmd.strip()
+
+    for line in lines:
+        s = line.strip()
+        if not s:
+            cleaned.append(line)
+            continue
+        if marker_tag in s:
+            continue
+        if cmd_core and cmd_core in s:
+            continue
+        if s in [BOARD_USER, BOARD_PASSWORD]:
+            continue
+        cleaned.append(line)
+
+    while cleaned and not cleaned[0].strip():
+        cleaned.pop(0)
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+
+    return "\n".join(cleaned), marker_re
 
 
 def ensure_shell(ser, login_timeout=LOGIN_TIMEOUT_DEFAULT):
-    """
-    Make sure we're sitting at a live shell prompt, logging in if the board
-    is currently showing a login: prompt. Raises on failure.
-    """
-    # Nudge the board so it re-prints whatever prompt it's at.
+    try:
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+    except Exception:
+        pass
+
     ser.write(b"\r\n")
+    ser.flush()
     time.sleep(0.3)
-    ser.reset_input_buffer()
     ser.write(b"\r\n")
+    ser.flush()
 
     marker, text = _read_until(
         ser,
@@ -163,27 +170,40 @@ def ensure_shell(ser, login_timeout=LOGIN_TIMEOUT_DEFAULT):
     )
 
     if marker in SHELL_PROMPT_MARKERS:
-        return  # already logged in
+        return
 
     if marker in LOGIN_PROMPT_MARKERS:
         ser.write((BOARD_USER + "\r\n").encode())
+        ser.flush()
+
         marker2, text2 = _read_until(
             ser,
             PASSWORD_PROMPT_MARKERS + SHELL_PROMPT_MARKERS + INCORRECT_LOGIN_MARKERS,
             timeout=login_timeout,
+            poke_newline_every=3,
         )
+
         if marker2 in INCORRECT_LOGIN_MARKERS:
             raise RuntimeError(f"Login failed for user '{BOARD_USER}':\n{text2}")
+
         if marker2 in PASSWORD_PROMPT_MARKERS:
             ser.write((BOARD_PASSWORD + "\r\n").encode())
+            ser.flush()
+
             marker3, text3 = _read_until(
-                ser, SHELL_PROMPT_MARKERS + INCORRECT_LOGIN_MARKERS, timeout=login_timeout
+                ser,
+                SHELL_PROMPT_MARKERS + INCORRECT_LOGIN_MARKERS,
+                timeout=login_timeout,
+                poke_newline_every=3,
             )
+
             if marker3 in INCORRECT_LOGIN_MARKERS or marker3 is None:
                 raise RuntimeError(f"Login failed (bad password?):\n{text3}")
             return
+
         if marker2 in SHELL_PROMPT_MARKERS:
             return
+
         raise RuntimeError(f"Timed out waiting for shell after sending username:\n{text2}")
 
     raise RuntimeError(f"Board did not show login or shell prompt within {login_timeout}s:\n{text}")
@@ -207,32 +227,48 @@ def cmd_run(args):
     try:
         ensure_shell(ser, login_timeout=args.login_timeout)
 
-        marker_tag = "__CMD_DONE_MARKER__"
-        full_cmd = f"{args.cmd}; echo {marker_tag}$?\r\n"
-        ser.reset_input_buffer()
-        ser.write(full_cmd.encode())
+        marker_tag = f"__CMD_DONE_MARKER__{int(time.time() * 1000)}__"
+        wrapped_cmd = f"printf '\\n'; {args.cmd}; rc=$?; echo {marker_tag}$rc"
+
+        try:
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+        except Exception:
+            pass
+
+        ser.write(b"\r\n")
+        ser.flush()
+        time.sleep(0.2)
+
+        ser.write((wrapped_cmd + "\r\n").encode())
+        ser.flush()
 
         idle_auto_enter = args.idle_seconds if args.auto_enter else None
         marker, text = _read_until(
-            ser, [marker_tag], timeout=args.timeout, idle_auto_enter=idle_auto_enter
+            ser,
+            [marker_tag],
+            timeout=args.timeout,
+            idle_auto_enter=idle_auto_enter,
         )
+
         if marker is None:
+            tail = _drain_briefly(ser, 0.5)
+            text = text + tail
             print("❌ Timed out waiting for command to finish")
             print(text)
             return 1
 
-        # Strip the echoed command line and the marker line, print the rest.
-        lines = text.splitlines()
-        out_lines = [l for l in lines if args.cmd not in l]
-        print("\n".join(out_lines))
+        cleaned_text, marker_re = _strip_command_echo(text, args.cmd, marker_tag)
+        print(cleaned_text)
 
-        rc_line = [l for l in lines if marker_tag in l]
         rc = 1
-        if rc_line:
+        m = marker_re.search(_normalize_output(text))
+        if m:
             try:
-                rc = int(rc_line[-1].split(marker_tag)[-1].strip())
+                rc = int(m.group(1))
             except ValueError:
                 rc = 1
+
         return rc
     except Exception as e:
         print(f"❌ Error running command: {e}")
@@ -248,29 +284,40 @@ def cmd_push(args):
 
         with open(args.local_file, "rb") as f:
             data = f.read()
+
         b64 = base64.b64encode(data).decode()
-
-        # Write via base64 + here-doc so any special characters in the
-        # script are transported safely over the serial link, then decode
-        # on the board side. Chunk it so we don't overrun small UART buffers.
         remote_b64_path = args.remote_path + ".b64"
-        ser.write(f"rm -f {remote_b64_path}\r\n".encode())
-        time.sleep(0.2)
-        ser.reset_input_buffer()
 
-        chunk_size = 200
+        try:
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+        except Exception:
+            pass
+
+        ser.write(f"rm -f {remote_b64_path} {args.remote_path}\r\n".encode())
+        ser.flush()
+        time.sleep(0.2)
+
+        chunk_size = 128
         for i in range(0, len(b64), chunk_size):
             chunk = b64[i:i + chunk_size]
             ser.write(f"echo '{chunk}' >> {remote_b64_path}\r\n".encode())
-            # Drain so the board's UART buffer doesn't overflow on long files
-            _read_until(ser, ["__never_match__"], timeout=0.3)
+            ser.flush()
+            time.sleep(0.08)
+            _drain_briefly(ser, 0.08)
 
-        decode_cmd = f"base64 -d {remote_b64_path} > {args.remote_path} && chmod +x {args.remote_path} && echo __PUSH_OK__"
+        push_marker = f"__PUSH_OK__{int(time.time() * 1000)}__"
+        decode_cmd = (
+            f"base64 -d {remote_b64_path} > {args.remote_path} && "
+            f"chmod +x {args.remote_path} && "
+            f"echo {push_marker}"
+        )
         ser.write((decode_cmd + "\r\n").encode())
-        marker, text = _read_until(ser, ["__PUSH_OK__"], timeout=args.timeout)
+        ser.flush()
 
+        marker, text = _read_until(ser, [push_marker], timeout=args.timeout)
         if marker is None:
-            print("❌ File did not land correctly on", args.remote_path)
+            print(f"❌ File did not land correctly on {args.remote_path}")
             print(text)
             return 1
 
@@ -284,26 +331,16 @@ def cmd_push(args):
 
 
 def main():
-    # Shared connection flags (--serial/--port/--baud/--timeout) are defined
-    # on a parent parser and attached to EACH subcommand parser below. This
-    # is what makes `serial_helper.py push --port ... --baud ...` work --
-    # previously these flags lived only on the top-level parser, so once
-    # argparse handed off to the "push" subparser it no longer recognized
-    # --port/--baud typed after the subcommand name, and raised
-    # "unrecognized arguments". Jenkins always calls it as
-    # `<subcommand> --port ... --baud ...`, so the subcommand parsers must
-    # own these flags themselves.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--serial", help="Unique board serial number (udev by-id)")
     common.add_argument("--port", help="Direct port path, e.g. /dev/ttyUSB0")
     common.add_argument("--baud", type=int, default=115200)
     common.add_argument("--timeout", type=int, default=30, help="Command/transfer completion timeout (s)")
     common.add_argument(
-        "--login-timeout", type=int, default=LOGIN_TIMEOUT_DEFAULT,
-        help=f"How long to wait for the board to boot and show a login/shell "
-             f"prompt (default: {LOGIN_TIMEOUT_DEFAULT}s). This is separate from "
-             f"--timeout on purpose: boot time is a fixed hardware property, not "
-             f"something that should shrink just because a command's own timeout is short."
+        "--login-timeout",
+        type=int,
+        default=LOGIN_TIMEOUT_DEFAULT,
+        help=f"How long to wait for the board to boot and show a login/shell prompt (default: {LOGIN_TIMEOUT_DEFAULT}s).",
     )
 
     p = argparse.ArgumentParser(parents=[common])
@@ -315,13 +352,16 @@ def main():
     sp_run = sub.add_parser("run", parents=[common])
     sp_run.add_argument("--cmd", required=True)
     sp_run.add_argument(
-        "--auto-enter", action="store_true", default=False,
-        help="Send a blank Enter whenever the board goes idle (unblocks scripts "
-             "sitting at a `read -p` prompt, without needing to modify them)."
+        "--auto-enter",
+        action="store_true",
+        default=False,
+        help="Send a blank Enter whenever the board goes idle.",
     )
     sp_run.add_argument(
-        "--idle-seconds", type=float, default=4.0,
-        help="How long the board must be silent before --auto-enter fires (default: 4s)."
+        "--idle-seconds",
+        type=float,
+        default=4.0,
+        help="How long the board must be silent before --auto-enter fires.",
     )
     sp_run.set_defaults(func=cmd_run)
 
