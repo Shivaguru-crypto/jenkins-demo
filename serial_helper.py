@@ -49,8 +49,43 @@ except ImportError:
     sys.exit(1)
 
 
+def open_serial(port, baud):
+    """
+    Open a serial port WITHOUT the reset pulse most USB-serial adapters
+    normally send. `serial.Serial(port, baud)` opens and asserts DTR/RTS by
+    default in one step -- that transition is exactly the signal many
+    boards wire to their reset line (same trick as Arduino auto-reset).
+    That was causing boards to silently reboot every time we opened a new
+    connection (check -> run -> push -> run), losing shell state and even
+    wiping /tmp between a push and the following run.
+
+    Fix: build the Serial object unopened, force dtr/rts low FIRST, then
+    open -- so there's no edge on open. We still add a short settle delay
+    afterward in case a particular adapter/board resets on power-up
+    regardless (some do, in hardware, no way to avoid it from software) --
+    that delay just gives the reset a chance to finish before we start
+    talking, instead of racing it.
+    """
+    ser = serial.Serial()
+    ser.port = port
+    ser.baudrate = baud
+    ser.timeout = 1
+    ser.dtr = False
+    ser.rts = False
+    ser.open()
+    time.sleep(0.3)
+    ser.reset_input_buffer()
+    return ser
+
+
 BOARD_USER = os.environ.get("BOARD_USER", "root")
 BOARD_PASSWORD = os.environ.get("BOARD_PASSWORD", "")  # empty = no password expected
+
+# Boot/login time is a hardware property of the board, not something that
+# should shrink or grow with how long a particular command's output takes
+# to appear. Keep it fixed and separate from --timeout. Override with
+# --login-timeout if a board is unusually slow to boot.
+LOGIN_TIMEOUT_DEFAULT = 60
 
 # Prompts we look for. Adjust SHELL_PROMPT to match your board's actual
 # prompt if it's not one of these (e.g. "root@rugged-board-a5d2x:~#").
@@ -109,7 +144,7 @@ def _read_until(ser, markers, timeout, poke_newline_every=None, idle_auto_enter=
     return None, buf.decode(errors="replace")
 
 
-def ensure_shell(ser, login_timeout=20):
+def ensure_shell(ser, login_timeout=LOGIN_TIMEOUT_DEFAULT):
     """
     Make sure we're sitting at a live shell prompt, logging in if the board
     is currently showing a login: prompt. Raises on failure.
@@ -155,9 +190,9 @@ def ensure_shell(ser, login_timeout=20):
 
 
 def cmd_check(args):
-    ser = serial.Serial(args.port, args.baud, timeout=1)
+    ser = open_serial(args.port, args.baud)
     try:
-        ensure_shell(ser, login_timeout=args.timeout)
+        ensure_shell(ser, login_timeout=args.login_timeout)
         print("✅ Board is REACHABLE and shell is ready")
         return 0
     except Exception as e:
@@ -168,9 +203,9 @@ def cmd_check(args):
 
 
 def cmd_run(args):
-    ser = serial.Serial(args.port, args.baud, timeout=1)
+    ser = open_serial(args.port, args.baud)
     try:
-        ensure_shell(ser, login_timeout=args.timeout)
+        ensure_shell(ser, login_timeout=args.login_timeout)
 
         marker_tag = "__CMD_DONE_MARKER__"
         full_cmd = f"{args.cmd}; echo {marker_tag}$?\r\n"
@@ -207,9 +242,9 @@ def cmd_run(args):
 
 
 def cmd_push(args):
-    ser = serial.Serial(args.port, args.baud, timeout=1)
+    ser = open_serial(args.port, args.baud)
     try:
-        ensure_shell(ser, login_timeout=args.timeout)
+        ensure_shell(ser, login_timeout=args.login_timeout)
 
         with open(args.local_file, "rb") as f:
             data = f.read()
@@ -262,7 +297,14 @@ def main():
     common.add_argument("--serial", help="Unique board serial number (udev by-id)")
     common.add_argument("--port", help="Direct port path, e.g. /dev/ttyUSB0")
     common.add_argument("--baud", type=int, default=115200)
-    common.add_argument("--timeout", type=int, default=30, help="Overall command/login timeout (s)")
+    common.add_argument("--timeout", type=int, default=30, help="Command/transfer completion timeout (s)")
+    common.add_argument(
+        "--login-timeout", type=int, default=LOGIN_TIMEOUT_DEFAULT,
+        help=f"How long to wait for the board to boot and show a login/shell "
+             f"prompt (default: {LOGIN_TIMEOUT_DEFAULT}s). This is separate from "
+             f"--timeout on purpose: boot time is a fixed hardware property, not "
+             f"something that should shrink just because a command's own timeout is short."
+    )
 
     p = argparse.ArgumentParser(parents=[common])
     sub = p.add_subparsers(dest="command", required=True)
