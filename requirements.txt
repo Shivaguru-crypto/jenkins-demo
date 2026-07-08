@@ -1,3 +1,5 @@
 flask==3.0.0
 pytest==7.4.0
 openpyxl==3.1.2
+
+the above allare the requirements
