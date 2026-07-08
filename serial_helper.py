@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""
-serial_helper.py
-"""
 
 import argparse
 import base64
@@ -16,7 +13,6 @@ try:
 except ImportError:
     print("❌ pyserial not installed. pip3 install pyserial --break-system-packages", file=sys.stderr)
     sys.exit(1)
-
 
 BOARD_USER = os.environ.get("BOARD_USER", "root")
 BOARD_PASSWORD = os.environ.get("BOARD_PASSWORD", "")
@@ -104,7 +100,7 @@ def _read_until(ser, markers, timeout, poke_newline_every=None, idle_auto_enter=
     return None, _safe_decode(buf)
 
 
-def _drain_briefly(ser, seconds=0.5):
+def _drain_briefly(ser, seconds=0.4):
     end = time.time() + seconds
     buf = b""
     while time.time() < end:
@@ -118,8 +114,7 @@ def _drain_briefly(ser, seconds=0.5):
 
 
 def _normalize_output(text):
-    text = text.replace("\r", "")
-    return text
+    return text.replace("\r", "")
 
 
 def _strip_command_echo(text, original_cmd, marker_tag):
@@ -130,14 +125,9 @@ def _strip_command_echo(text, original_cmd, marker_tag):
 
     for line in lines:
         s = line.strip()
-        if not s:
-            cleaned.append(line)
-            continue
         if marker_tag in s:
             continue
         if cmd_core and cmd_core in s:
-            continue
-        if s in [BOARD_USER, BOARD_PASSWORD]:
             continue
         cleaned.append(line)
 
@@ -252,8 +242,7 @@ def cmd_run(args):
         )
 
         if marker is None:
-            tail = _drain_briefly(ser, 0.5)
-            text = text + tail
+            text += _drain_briefly(ser, 0.5)
             print("❌ Timed out waiting for command to finish")
             print(text)
             return 1
@@ -285,8 +274,13 @@ def cmd_push(args):
         with open(args.local_file, "rb") as f:
             data = f.read()
 
-        b64 = base64.b64encode(data).decode()
+        if not data:
+            print(f"❌ Local file is empty: {args.local_file}")
+            return 1
+
+        b64 = base64.b64encode(data).decode("ascii")
         remote_b64_path = args.remote_path + ".b64"
+        push_marker = f"__PUSH_OK__{int(time.time() * 1000)}__"
 
         try:
             ser.reset_input_buffer()
@@ -294,28 +288,32 @@ def cmd_push(args):
         except Exception:
             pass
 
-        ser.write(f"rm -f {remote_b64_path} {args.remote_path}\r\n".encode())
+        ser.write((f"rm -f {remote_b64_path} {args.remote_path}\r\n").encode())
         ser.flush()
         time.sleep(0.2)
+        _drain_briefly(ser, 0.2)
 
-        chunk_size = 128
+        chunk_size = 48
         for i in range(0, len(b64), chunk_size):
             chunk = b64[i:i + chunk_size]
-            ser.write(f"echo '{chunk}' >> {remote_b64_path}\r\n".encode())
+            ser.write((f"printf '%s' '{chunk}' >> {remote_b64_path}\r\n").encode())
             ser.flush()
-            time.sleep(0.08)
+            time.sleep(0.12)
             _drain_briefly(ser, 0.08)
 
-        push_marker = f"__PUSH_OK__{int(time.time() * 1000)}__"
-        decode_cmd = (
+        verify_and_decode = (
+            f"test -s {remote_b64_path} && "
             f"base64 -d {remote_b64_path} > {args.remote_path} && "
             f"chmod +x {args.remote_path} && "
+            f"test -s {args.remote_path} && "
             f"echo {push_marker}"
         )
-        ser.write((decode_cmd + "\r\n").encode())
+
+        ser.write((verify_and_decode + "\r\n").encode())
         ser.flush()
 
         marker, text = _read_until(ser, [push_marker], timeout=args.timeout)
+
         if marker is None:
             print(f"❌ File did not land correctly on {args.remote_path}")
             print(text)
@@ -323,6 +321,7 @@ def cmd_push(args):
 
         print(f"✅ Pushed {args.local_file} -> {args.remote_path}")
         return 0
+
     except Exception as e:
         print(f"❌ Error pushing file: {e}")
         return 1
@@ -351,18 +350,8 @@ def main():
 
     sp_run = sub.add_parser("run", parents=[common])
     sp_run.add_argument("--cmd", required=True)
-    sp_run.add_argument(
-        "--auto-enter",
-        action="store_true",
-        default=False,
-        help="Send a blank Enter whenever the board goes idle.",
-    )
-    sp_run.add_argument(
-        "--idle-seconds",
-        type=float,
-        default=4.0,
-        help="How long the board must be silent before --auto-enter fires.",
-    )
+    sp_run.add_argument("--auto-enter", action="store_true", default=False)
+    sp_run.add_argument("--idle-seconds", type=float, default=4.0)
     sp_run.set_defaults(func=cmd_run)
 
     sp_push = sub.add_parser("push", parents=[common])
