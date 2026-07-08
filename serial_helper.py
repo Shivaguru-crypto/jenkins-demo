@@ -249,18 +249,28 @@ def cmd_push(args):
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--serial", help="Unique board serial number (udev by-id)")
-    p.add_argument("--port", help="Direct port path, e.g. /dev/ttyUSB0")
-    p.add_argument("--baud", type=int, default=115200)
-    p.add_argument("--timeout", type=int, default=30, help="Overall command/login timeout (s)")
+    # Shared connection flags (--serial/--port/--baud/--timeout) are defined
+    # on a parent parser and attached to EACH subcommand parser below. This
+    # is what makes `serial_helper.py push --port ... --baud ...` work --
+    # previously these flags lived only on the top-level parser, so once
+    # argparse handed off to the "push" subparser it no longer recognized
+    # --port/--baud typed after the subcommand name, and raised
+    # "unrecognized arguments". Jenkins always calls it as
+    # `<subcommand> --port ... --baud ...`, so the subcommand parsers must
+    # own these flags themselves.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--serial", help="Unique board serial number (udev by-id)")
+    common.add_argument("--port", help="Direct port path, e.g. /dev/ttyUSB0")
+    common.add_argument("--baud", type=int, default=115200)
+    common.add_argument("--timeout", type=int, default=30, help="Overall command/login timeout (s)")
 
+    p = argparse.ArgumentParser(parents=[common])
     sub = p.add_subparsers(dest="command", required=True)
 
-    sp_check = sub.add_parser("check")
+    sp_check = sub.add_parser("check", parents=[common])
     sp_check.set_defaults(func=cmd_check)
 
-    sp_run = sub.add_parser("run")
+    sp_run = sub.add_parser("run", parents=[common])
     sp_run.add_argument("--cmd", required=True)
     sp_run.add_argument(
         "--auto-enter", action="store_true", default=False,
@@ -273,7 +283,7 @@ def main():
     )
     sp_run.set_defaults(func=cmd_run)
 
-    sp_push = sub.add_parser("push")
+    sp_push = sub.add_parser("push", parents=[common])
     sp_push.add_argument("--local-file", required=True)
     sp_push.add_argument("--remote-path", required=True)
     sp_push.set_defaults(func=cmd_push)
