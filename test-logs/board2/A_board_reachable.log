@@ -1,3 +1,4 @@
-   [wake_shell] already at shell prompt (no login: seen)
-❌ Port opened but shell did not respond on /dev/ttyUSB1
+   [wake_shell] no prompt yet (buf='') — sending extra nudge
+   [wake_shell] WARNING: still no prompt. buf=''
+❌ No shell response on /dev/ttyUSB1
 Raw: ''
