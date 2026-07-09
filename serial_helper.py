@@ -1,146 +1,263 @@
+#!/usr/bin/env python3
 """
-serial_helper.py — Lightweight serial console helper for embedded board testing.
+serial_helper.py — talk to a board over its FTDI USB-serial console instead
+of SSH/ngrok, since the boards have no network stack (no IP, no SSH port).
 
-Provides:
-  - SerialHelper(port, baud, timeout) — initialize connection
-  - send_command(cmd, timeout) — send command, capture response
-  - close() — cleanup
+Subcommands:
+  check  --port /dev/ttyUSB0 --baud 115200
+      Confirms the serial console is present and gives back a live shell prompt.
 
-Usage:
-    sh = SerialHelper('/dev/ttyUSB0', 115200, 10)
-    resp = sh.send_command("uname -a", timeout=2)
-    print(resp)
-    sh.close()
+  run    --port /dev/ttyUSB0 --baud 115200 --cmd "some shell command" [--timeout 60]
+      Sends one command, captures stdout and the real exit code (via `; echo
+      MARKER$?`), prints stdout, and exits with that same code so Jenkins'
+      returnStatus: true keeps working exactly like it did with ssh.
+
+  push   --port /dev/ttyUSB0 --baud 115200 --local-file perip_test.sh \
+         --remote-path /tmp/perip_test.sh [--timeout 60]
+      Streams a text file to the board line-by-line as a `cat > file << EOF`
+      heredoc over the serial link (no scp/zmodem needed for a plain script),
+      then chmod +x's it and confirms it landed.
+
+Exit codes mirror what the Jenkinsfile expects: 0 = PASS, non-zero = FAIL.
+
+--- Reset-safety notes (added after Error 8) -------------------------------
+Some boards wire their hardware reset circuit to the DTR control line (same
+idea as an Arduino auto-reset circuit). Two separate things can trigger it:
+  1. Linux's default HUPCL setting drops DTR the instant a serial device is
+     CLOSED by any program.
+  2. Some USB-serial drivers assert/toggle DTR the instant a port is OPENED.
+open_port() below guards against both: it configures the Serial object with
+DTR held at a fixed level *before* physically opening the port, and disables
+HUPCL immediately after opening, via `stty -hupcl`.
+wake_shell() also now detects a `login:` prompt (which happens if a reset
+still occurs for any other reason) and logs back in automatically instead of
+silently sending commands into a login prompt.
+-----------------------------------------------------------------------------
 """
 
-import serial
-import time
+import argparse
+import re
+import subprocess
 import sys
+import time
+
+try:
+    import serial
+    import serial.tools.list_ports
+except ImportError:
+    print("❌ pyserial not installed. Run: pip3 install pyserial --break-system-packages")
+    sys.exit(1)
+
+END_MARKER = "___CMD_DONE___"
+HEREDOC_MARKER = "___JENKINS_EOF___"
+BOARD_LOGIN_USER = "root"
+BOARD_LOGIN_PASSWORD = ""  # set this if your boards require a password
 
 
-class SerialHelper:
-    """Manage serial console interaction with embedded boards."""
+def resolve_port(port_or_serial):
+    """
+    Accepts either a literal device path (/dev/ttyUSB0) or a USB serial
+    number (e.g. 'D3074GZG', printed on the FTDI chip / found via
+    `python3 -m serial.tools.list_ports -v`) and returns the actual device
+    path to open. Using the serial number is more reliable since /dev/ttyUSBx
+    numbering can shift if boards are unplugged/replugged in a different order.
+    """
+    if port_or_serial.startswith("/dev/"):
+        return port_or_serial
 
-    def __init__(self, port, baud, timeout=10):
-        """
-        Initialize serial connection.
+    for p in serial.tools.list_ports.comports():
+        if p.serial_number == port_or_serial:
+            return p.device
 
-        Args:
-            port (str): Serial device path (e.g., '/dev/ttyUSB0')
-            baud (int): Baud rate (e.g., 115200)
-            timeout (int): Read timeout in seconds
-        """
-        self.port = port
-        self.baud = baud
-        self.timeout = timeout
-        self.ser = None
+    print(f"❌ No USB serial device found with serial number '{port_or_serial}'. "
+          f"Run 'python3 -m serial.tools.list_ports -v' to see what's connected.")
+    sys.exit(1)
 
-        try:
-            self.ser = serial.Serial(
-                port=port,
-                baudrate=baud,
-                timeout=timeout,
-                write_timeout=timeout,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                xonxoff=False,
-                rtscts=False,
-                dsrdtr=False,
-            )
-            self.ser.reset_input_buffer()
-            self.ser.reset_output_buffer()
-            print(f"[serial_helper] Connected to {port} @ {baud}", file=sys.stderr)
-        except Exception as e:
-            print(f"[serial_helper] Failed to open {port}: {e}", file=sys.stderr)
-            raise
 
-    def send_command(self, cmd, timeout=None):
-        """
-        Send a command and capture response.
+def open_port(port, baud, timeout=5):
+    resolved = resolve_port(port)
 
-        Args:
-            cmd (str): Command to send (e.g., 'uname -a')
-            timeout (int): Override timeout for this command (seconds)
+    # Build the Serial object WITHOUT opening it yet, so we can pin DTR to a
+    # known level before the physical open happens (avoids reset-on-open).
+    ser = serial.Serial()
+    ser.port = resolved
+    ser.baudrate = int(baud)
+    ser.timeout = timeout
+    ser.dtr = False   # hold DTR low before open — prevents a reset pulse on open
+    ser.rts = False
+    ser.open()
 
-        Returns:
-            str: Response text (stdout captured from serial console)
-        """
-        if not self.ser or not self.ser.is_open:
-            raise RuntimeError("Serial port not open")
+    # Disable "hang up on close" at the OS level so closing this connection
+    # later (which happens after every single check/run/push call) doesn't
+    # drop DTR and reset the board.
+    try:
+        subprocess.run(["stty", "-F", resolved, "-hupcl"], check=False, capture_output=True)
+    except Exception:
+        pass  # non-fatal — worst case HUPCL stays enabled
 
-        actual_timeout = timeout if timeout is not None else self.timeout
+    time.sleep(0.5)
+    ser.reset_input_buffer()
+    return ser
 
-        try:
-            # Send command + newline
-            self.ser.write((cmd + "\n").encode("utf-8", errors="replace"))
-            self.ser.flush()
 
-            # Capture response
-            response = b""
-            start_time = time.time()
+def wake_shell(ser, timeout=8):
+    """
+    Nudge the console and detect what state it's in. If it's sitting at a
+    login prompt (e.g. because a reset happened despite our precautions),
+    log back in automatically instead of leaving commands to be typed blindly
+    into a login prompt.
+    """
+    ser.write(b"\r\n")
+    time.sleep(0.5)
+    banner = ser.read(ser.in_waiting or 1).decode(errors="ignore")
 
-            while time.time() - start_time < actual_timeout:
-                try:
-                    chunk = self.ser.read(256)
-                    if chunk:
-                        response += chunk
-                except serial.SerialTimeoutException:
-                    # Read timeout is expected; check wall-clock time
-                    continue
+    if "login:" in banner.lower():
+        ser.write((BOARD_LOGIN_USER + "\n").encode())
+        time.sleep(1)
+        resp = ser.read(ser.in_waiting or 1).decode(errors="ignore")
+        if "password:" in resp.lower():
+            ser.write((BOARD_LOGIN_PASSWORD + "\n").encode())
+            time.sleep(1)
+            ser.read(ser.in_waiting or 1)
+        return
 
-                # Simple heuristic: if we got data and now see silence, assume done
-                # (adjust threshold if needed)
-                if response and len(chunk) == 0:
-                    time.sleep(0.1)
-                    # One more check for stragglers
-                    chunk = self.ser.read(256)
-                    if not chunk:
-                        break
+    # Otherwise assume we're already at a shell prompt — clear any noise.
+    ser.read(ser.in_waiting or 1)
 
-            result = response.decode("utf-8", errors="replace").strip()
-            return result
 
-        except Exception as e:
-            print(f"[serial_helper] send_command failed: {e}", file=sys.stderr)
-            raise
+def send_line(ser, line):
+    ser.write((line + "\n").encode())
 
-    def close(self):
-        """Close serial port."""
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-            print(f"[serial_helper] Closed {self.port}", file=sys.stderr)
+
+def read_until(ser, marker, timeout=30):
+    buf = ""
+    start = time.time()
+    while time.time() - start < timeout:
+        chunk = ser.read(ser.in_waiting or 1).decode(errors="ignore")
+        if chunk:
+            buf += chunk
+            if marker in buf:
+                break
+        else:
+            time.sleep(0.05)
+    return buf
+
+
+def run_command(ser, cmd, timeout=60):
+    send_line(ser, f"{cmd}; echo {END_MARKER}$?")
+    raw = read_until(ser, END_MARKER, timeout=timeout)
+
+    exit_code = 1
+    body_lines = []
+    for line in raw.splitlines():
+        m = re.search(rf"{END_MARKER}(\d+)", line)
+        if m:
+            exit_code = int(m.group(1))
+        elif line.strip() and cmd not in line:  # drop the echoed command line
+            body_lines.append(line)
+
+    return "\n".join(body_lines), exit_code
+
+
+def cmd_check(args):
+    try:
+        ser = open_port(args.port, args.baud, timeout=3)
+        wake_shell(ser)
+        out, rc = run_command(ser, "echo PING_OK", timeout=8)
+        ser.close()
+        if "PING_OK" in out:
+            print(f"✅ Serial console reachable on {args.port} @ {args.baud} baud")
+            sys.exit(0)
+        print(f"❌ Port opened but no shell response on {args.port}\nRaw output: {out!r}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Could not open serial port {args.port}: {e}")
+        sys.exit(1)
+
+
+def cmd_run(args):
+    try:
+        ser = open_port(args.port, args.baud, timeout=args.timeout)
+        wake_shell(ser)
+        out, rc = run_command(ser, args.cmd, timeout=args.timeout)
+        print(out)
+        ser.close()
+        sys.exit(rc)
+    except Exception as e:
+        print(f"❌ Serial run failed on {args.port}: {e}")
+        sys.exit(1)
+
+
+def cmd_push(args):
+    try:
+        with open(args.local_file, "r") as f:
+            content = f.read()
+
+        ser = open_port(args.port, args.baud, timeout=args.timeout)
+        wake_shell(ser)
+
+        push_done_marker = "___PUSH_DONE___"
+
+        send_line(ser, f"cat > {args.remote_path} << '{HEREDOC_MARKER}'")
+        time.sleep(0.2)
+        for line in content.splitlines():
+            send_line(ser, line)
+            time.sleep(0.05)  # slightly longer gate for slower board consoles
+        send_line(ser, HEREDOC_MARKER)
+        # Instead of a fixed sleep, actively wait for confirmation that the
+        # heredoc has actually closed before sending the next command — this
+        # is what was causing chmod to be typed mid-transfer and mangling
+        # the last line of the file.
+        send_line(ser, f"echo {push_done_marker}")
+        confirm = read_until(ser, push_done_marker, timeout=15)
+        if push_done_marker not in confirm:
+            print(f"❌ Heredoc transfer did not confirm completion (timed out)\n"
+                  f"Raw output: {confirm!r}")
+            ser.close()
+            sys.exit(1)
+
+        out, rc = run_command(
+            ser, f"chmod +x {args.remote_path} && ls -l {args.remote_path}"
+        )
+        print(out)
+        ser.close()
+
+        if rc == 0 and "No such file" not in out:
+            sys.exit(0)
+        print(f"❌ File did not land correctly on {args.remote_path}\nRaw output: {out!r}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Serial push failed on {args.port}: {e}")
+        sys.exit(1)
+
+
+def main():
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers(dest="action", required=True)
+
+    pc = sub.add_parser("check")
+    pc.add_argument("--port", required=True)
+    pc.add_argument("--baud", default="115200")
+    pc.set_defaults(func=cmd_check)
+
+    pr = sub.add_parser("run")
+    pr.add_argument("--port", required=True)
+    pr.add_argument("--baud", default="115200")
+    pr.add_argument("--cmd", required=True)
+    pr.add_argument("--timeout", type=int, default=60)
+    pr.set_defaults(func=cmd_run)
+
+    pp = sub.add_parser("push")
+    pp.add_argument("--port", required=True)
+    pp.add_argument("--baud", default="115200")
+    pp.add_argument("--local-file", required=True)
+    pp.add_argument("--remote-path", required=True)
+    pp.add_argument("--timeout", type=int, default=60)
+    pp.set_defaults(func=cmd_push)
+
+    args = p.parse_args()
+    args.func(args)
 
 
 if __name__ == "__main__":
-    """Quick test: python3 serial_helper.py /dev/ttyUSB0"""
-    if len(sys.argv) < 2:
-        print("Usage: python3 serial_helper.py <port> [baud]")
-        sys.exit(1)
-
-    port = sys.argv[1]
-    baud = int(sys.argv[2]) if len(sys.argv) > 2 else 115200
-
-    try:
-        sh = SerialHelper(port, baud, timeout=5)
-        
-        # Send a carriage return to get a prompt
-        print("Sending CR to get prompt...")
-        resp = sh.send_command("", timeout=2)
-        print(f"Response:\n{resp}\n")
-
-        # Test: uname
-        print("Sending: uname -a")
-        resp = sh.send_command("uname -a", timeout=2)
-        print(f"Response:\n{resp}\n")
-
-        # Test: ls /sys/class/gpio
-        print("Sending: ls /sys/class/gpio")
-        resp = sh.send_command("ls -la /sys/class/gpio 2>/dev/null || echo 'not found'", timeout=2)
-        print(f"Response:\n{resp}\n")
-
-        sh.close()
-        print("✅ Test complete")
-    except Exception as e:
-        print(f"❌ Test failed: {e}")
-        sys.exit(1)
+    main()
