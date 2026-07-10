@@ -118,6 +118,7 @@ def run_command(ser, cmd, timeout=60):
     time.sleep(0.3)
     ser.read(ser.in_waiting)  # drain the stty echo — we don't need it
 
+    ser.write(b"stty cols 200\n"); time.sleep(0.3); ser.read(ser.in_waiting or 1)
     send_line(ser, f"{cmd}; echo {END_MARKER}$?")
     raw = read_until(ser, END_MARKER, timeout=timeout)
 
