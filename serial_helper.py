@@ -89,13 +89,19 @@ def wake_shell(ser):
     print(f"   [wake_shell] buf={buf!r:.120} matched={m!r}")
 
     if m and "login:" in m:   _do_login(ser); return
-    if m:                     print("   [wake_shell] shell confirmed"); return
+    if m:
+        print("   [wake_shell] shell confirmed")
+        ser.write(b"stty cols 200\n"); time.sleep(0.3); ser.read(ser.in_waiting or 1)
+        return
 
     ser.write(b"\r\n")
     buf2, m2 = read_until_any(ser, ["login:", "#", "$"], timeout=4)
     print(f"   [wake_shell] nudge buf={buf2!r:.120} matched={m2!r}")
     if m2 and "login:" in m2: _do_login(ser); return
-    if m2:                    print("   [wake_shell] shell confirmed after nudge"); return
+    if m2:
+        print("   [wake_shell] shell confirmed after nudge")
+        ser.write(b"stty cols 200\n"); time.sleep(0.3); ser.read(ser.in_waiting or 1)
+        return
     print("   [wake_shell] WARNING: no prompt — proceeding anyway")
 
 def _do_login(ser):
