@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-serial_helper.py v4.1
-Fix: END_MARKER shortened to __DONE__ to prevent 80-col terminal line-wrap
-     splitting the marker across two lines and breaking read_until() detection.
+serial_helper.py v4.2
+- END_MARKER = __DONE__ (short, avoids 80-col wrap)
+- run_command: after sending cmd, drains ALL output until marker found
+  with a generous inter-chunk idle wait to handle slow/bursty board output
+- wake_shell: Ctrl+C + HEREDOC_EOF recovery, reads with in_waiting polling
 """
 import argparse, re, subprocess, sys, time
 try:
@@ -10,8 +12,8 @@ try:
 except ImportError:
     print("pip3 install pyserial --break-system-packages"); sys.exit(1)
 
-END_MARKER  = "__DONE__"        # short — never wraps at 80 cols
-PUSH_MARKER = "__PUSH__"        # short — same reason
+END_MARKER  = "__DONE__"
+PUSH_MARKER = "__PUSH__"
 HEREDOC_EOF = "___JENKINS_EOF___"
 BOARD_LOGIN_USER     = "root"
 BOARD_LOGIN_PASSWORD = ""
@@ -34,6 +36,7 @@ def open_port(port, baud, timeout=5):
     return ser
 
 def read_until_any(ser, markers, timeout=5):
+    """Non-blocking poll until any marker found or timeout."""
     buf = ""; start = time.time()
     while time.time()-start < timeout:
         n = ser.in_waiting
@@ -46,7 +49,30 @@ def read_until_any(ser, markers, timeout=5):
     return buf, None
 
 def read_until(ser, marker, timeout=30):
-    buf, _ = read_until_any(ser, [marker], timeout=timeout)
+    """
+    Read until marker found or timeout.
+    Uses idle-gap detection: keeps reading as long as data keeps arriving,
+    even if no data for up to 1s at a time (handles bursty dmesg output).
+    """
+    buf = ""
+    start = time.time()
+    last_data = time.time()
+    idle_limit = 1.5  # wait up to 1.5s of silence before giving up on more data
+
+    while time.time() - start < timeout:
+        n = ser.in_waiting
+        if n:
+            chunk = ser.read(n).decode(errors="ignore")
+            buf += chunk
+            last_data = time.time()
+            if marker in buf:
+                break
+        else:
+            # No data right now — check idle gap
+            if buf and (time.time() - last_data) > idle_limit:
+                # Board has gone silent and we have some output — stop waiting
+                break
+            time.sleep(0.05)
     return buf
 
 def send_line(ser, line):
@@ -86,11 +112,13 @@ def _do_login(ser):
 def run_command(ser, cmd, timeout=60):
     """
     Send cmd and capture output + exit code.
-    Uses short END_MARKER (__DONE__) to avoid 80-col terminal line-wrap
-    splitting the marker and breaking detection.
-    Format: cmd; echo __DONE__$?
-    The marker line looks like: __DONE__0
+    Prepends 'stty cols 200' to prevent 80-col terminal wrap corrupting output.
     """
+    # Set wide terminal first so board doesn't wrap our marker line
+    ser.write(b"stty cols 200\n")
+    time.sleep(0.3)
+    ser.read(ser.in_waiting)  # drain the stty echo — we don't need it
+
     send_line(ser, f"{cmd}; echo {END_MARKER}$?")
     raw = read_until(ser, END_MARKER, timeout=timeout)
 
@@ -136,6 +164,11 @@ def cmd_push(args):
     try:
         ser = open_port(args.port, args.baud, timeout=args.timeout)
         wake_shell(ser)
+
+        # Widen terminal before heredoc so lines don't wrap during transfer
+        ser.write(b"stty cols 200\n"); time.sleep(0.3)
+        ser.read(ser.in_waiting)
+
         send_line(ser, f"cat > {remote} << '{HEREDOC_EOF}'")
         buf, m = read_until_any(ser, [">"], timeout=5)
         if not m:
