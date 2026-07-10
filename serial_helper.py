@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
+"""
+serial_helper.py v4.1
+Fix: END_MARKER shortened to __DONE__ to prevent 80-col terminal line-wrap
+     splitting the marker across two lines and breaking read_until() detection.
+"""
 import argparse, re, subprocess, sys, time
 try:
     import serial, serial.tools.list_ports
 except ImportError:
     print("pip3 install pyserial --break-system-packages"); sys.exit(1)
 
-END_MARKER  = "___CMD_DONE___"
-PUSH_MARKER = "___PUSH_DONE___"
+END_MARKER  = "__DONE__"        # short — never wraps at 80 cols
+PUSH_MARKER = "__PUSH__"        # short — same reason
 HEREDOC_EOF = "___JENKINS_EOF___"
 BOARD_LOGIN_USER     = "root"
 BOARD_LOGIN_PASSWORD = ""
@@ -31,7 +36,7 @@ def open_port(port, baud, timeout=5):
 def read_until_any(ser, markers, timeout=5):
     buf = ""; start = time.time()
     while time.time()-start < timeout:
-        n = ser.in_waiting   # non-blocking — only reads bytes already arrived
+        n = ser.in_waiting
         if n:
             buf += ser.read(n).decode(errors="ignore")
             for m in markers:
@@ -79,8 +84,16 @@ def _do_login(ser):
     print("   [wake_shell] logged in" if m else "   [wake_shell] WARNING: no shell after login")
 
 def run_command(ser, cmd, timeout=60):
+    """
+    Send cmd and capture output + exit code.
+    Uses short END_MARKER (__DONE__) to avoid 80-col terminal line-wrap
+    splitting the marker and breaking detection.
+    Format: cmd; echo __DONE__$?
+    The marker line looks like: __DONE__0
+    """
     send_line(ser, f"{cmd}; echo {END_MARKER}$?")
     raw = read_until(ser, END_MARKER, timeout=timeout)
+
     exit_code = 1; body = []; echoed = False
     for line in raw.splitlines():
         m = re.search(rf"{re.escape(END_MARKER)}(\d+)", line)
