@@ -1,494 +1,167 @@
-"""
-serial_helper.py v5 — FIXED Serial Communication Helper
-=========================================================
+#!/usr/bin/env python3
+import argparse, re, subprocess, sys, time
+try:
+    import serial, serial.tools.list_ports
+except ImportError:
+    print("pip3 install pyserial --break-system-packages"); sys.exit(1)
 
-Fixed Issues:
-✅ Critical Bug #1: wake_shell() timeout too short (100ms → 500ms)
-✅ Critical Bug #2: No login prompt handling (now handles "login:" prompt)
-✅ Critical Bug #3: No heredoc prompt detection (now detects "> ")
-✅ Critical Bug #4: Read timing mismatched (retry loop + longer waits)
-✅ Improved: Better error messages with detailed diagnostics
+END_MARKER  = "___CMD_DONE___"
+PUSH_MARKER = "___PUSH_DONE___"
+HEREDOC_EOF = "___JENKINS_EOF___"
+BOARD_LOGIN_USER     = "root"
+BOARD_LOGIN_PASSWORD = ""
 
-Usage:
-    python3 serial_helper.py check --port /dev/ttyUSB0 --baud 115200
-    python3 serial_helper.py run --port /dev/ttyUSB0 --baud 115200 --cmd "uname -a" --timeout 10
-    python3 serial_helper.py push --port /dev/ttyUSB0 --baud 115200 --local-file test.sh --remote-path /run/test.sh
-"""
+def resolve_port(p):
+    if p.startswith("/dev/"): return p
+    for port in serial.tools.list_ports.comports():
+        if port.serial_number == p: return port.device
+    print(f"No device with serial number '{p}'"); sys.exit(1)
 
-import serial
-import time
-import sys
-import os
-import argparse
+def open_port(port, baud, timeout=5):
+    resolved = resolve_port(port)
+    ser = serial.Serial()
+    ser.port = resolved; ser.baudrate = int(baud); ser.timeout = timeout
+    ser.dtr = False; ser.rts = False; ser.dsrdtr = False
+    ser.open()
+    try: subprocess.run(["stty","-F",resolved,"-hupcl"],check=False,capture_output=True)
+    except: pass
+    time.sleep(0.3)
+    return ser
 
+def read_until_any(ser, markers, timeout=5):
+    buf = ""; start = time.time()
+    while time.time()-start < timeout:
+        n = ser.in_waiting   # non-blocking — only reads bytes already arrived
+        if n:
+            buf += ser.read(n).decode(errors="ignore")
+            for m in markers:
+                if m in buf: return buf, m
+        else:
+            time.sleep(0.05)
+    return buf, None
 
-class SerialHelper:
-    """Enhanced serial console helper with login handling and prompt detection."""
+def read_until(ser, marker, timeout=30):
+    buf, _ = read_until_any(ser, [marker], timeout=timeout)
+    return buf
 
-    def __init__(self, port, baud, timeout=10):
-        """
-        Initialize serial connection.
+def send_line(ser, line):
+    ser.write((line+"\n").encode())
 
-        Args:
-            port (str): Serial device path (e.g., '/dev/ttyUSB0')
-            baud (int): Baud rate (e.g., 115200)
-            timeout (int): Read timeout in seconds
-        """
-        self.port = port
-        self.baud = baud
-        self.timeout = timeout
-        self.ser = None
+def wake_shell(ser):
+    print("   [wake_shell] sending recovery sequence")
+    ser.write(b"\x03");                        time.sleep(0.2)
+    ser.write(b"\r\n");                        time.sleep(0.1)
+    ser.write((HEREDOC_EOF+"\n").encode());    time.sleep(0.2)
+    ser.write(b"\r\n");                        time.sleep(0.1)
 
-        try:
-            self.ser = serial.Serial(
-                port=port,
-                baudrate=baud,
-                timeout=timeout,
-                write_timeout=timeout,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                xonxoff=False,
-                rtscts=False,
-                dsrdtr=False,
-            )
-            # Clear buffers
-            self.ser.reset_input_buffer()
-            self.ser.reset_output_buffer()
-            time.sleep(0.5)
-            
-            print(f"[serial_helper] ✅ Connected to {port} @ {baud} baud", file=sys.stderr)
-        except serial.SerialException as e:
-            print(f"[serial_helper] ❌ Failed to open {port}: {e}", file=sys.stderr)
-            raise
+    buf, m = read_until_any(ser, ["login:", "#", "$"], timeout=4)
+    print(f"   [wake_shell] buf={buf!r:.120} matched={m!r}")
 
-    def wake_shell(self):
-        """
-        Multi-stage shell recovery sequence.
-        
-        Handles:
-        - Stuck commands (sends Ctrl+C)
-        - Open heredocs (sends EOF marker)
-        - Login prompts (sends username)
-        - Password prompts (sends empty)
-        - Shell waiting for input
-        
-        Returns:
-            str: Response from board containing prompt
-            
-        Raises:
-            RuntimeError: If shell cannot be woken after recovery
-        """
-        print("[wake_shell] Starting recovery sequence...", file=sys.stderr)
-        
-        # Stage 1: Send Ctrl+C to interrupt current command
-        print("[wake_shell] Stage 1: Sending Ctrl+C to interrupt", file=sys.stderr)
-        self.ser.write(b'\x03')
-        time.sleep(0.3)
-        
-        # Stage 2: Send newline in case stuck in heredoc
-        print("[wake_shell] Stage 2: Sending newlines", file=sys.stderr)
-        self.ser.write(b'\r\n')
-        time.sleep(0.3)
-        
-        # Stage 3: Send EOF marker to close any open heredoc
-        print("[wake_shell] Stage 3: Sending EOF marker", file=sys.stderr)
-        self.ser.write(b'___JENKINS_EOF___\r\n')
-        time.sleep(0.3)
-        
-        # Stage 4: Another newline
-        self.ser.write(b'\r\n')
-        time.sleep(0.3)
-        
-        # Stage 5: Wait longer and read with retry loop
-        print("[wake_shell] Stage 4: Reading response (with timeout)...", file=sys.stderr)
-        response = b''
-        for attempt in range(30):  # Try for up to 3 seconds (30 * 0.1s)
-            try:
-                chunk = self.ser.read(256)
-                if chunk:
-                    response += chunk
-                    print(f"[wake_shell] Got data on attempt {attempt}: {len(chunk)} bytes", 
-                          file=sys.stderr)
-            except serial.SerialTimeoutException:
-                pass
-            time.sleep(0.1)
-        
-        response_text = response.decode('utf-8', errors='replace')
-        print(f"[wake_shell] Response length: {len(response)} bytes", file=sys.stderr)
-        print(f"[wake_shell] Response preview: {response_text[:200]}", file=sys.stderr)
-        
-        # Check if we have any response
-        if not response:
-            raise RuntimeError(
-                f"❌ No response from board after wake sequence on {self.port}\n"
-                f"   Possible causes:\n"
-                f"   - Board not powered\n"
-                f"   - USB-FTDI adapter disconnected\n"
-                f"   - Wrong baud rate (expected {self.baud})\n"
-                f"   - Board hung or crashed"
-            )
-        
-        return response_text
+    if m and "login:" in m:   _do_login(ser); return
+    if m:                     print("   [wake_shell] shell confirmed"); return
 
-    def handle_login(self):
-        """
-        Handle login prompt if board is at login screen.
-        
-        Sequence:
-        1. Wait for "login:" prompt
-        2. Send "root"
-        3. Wait for "Password:" or shell prompt
-        4. Send empty password (press Enter)
-        5. Wait for shell prompt
-        """
-        print("[handle_login] Checking for login prompt...", file=sys.stderr)
-        
-        response = self.ser.read(512)
-        response_text = response.decode('utf-8', errors='replace')
-        
-        if 'login:' not in response_text and 'login' not in response_text.lower():
-            print("[handle_login] Not at login prompt, proceeding...", file=sys.stderr)
-            return response_text
-        
-        print("[handle_login] Detected login prompt, sending username...", file=sys.stderr)
-        
-        # Send username
-        self.ser.write(b'root\r\n')
-        time.sleep(0.5)
-        
-        # Read password prompt or shell
-        response = b''
-        for _ in range(20):
-            chunk = self.ser.read(256)
-            if chunk:
-                response += chunk
-            time.sleep(0.1)
-        
-        response_text = response.decode('utf-8', errors='replace')
-        
-        # Check for password prompt
-        if 'Password:' in response_text or 'password:' in response_text:
-            print("[handle_login] Detected password prompt, sending empty (press Enter)...", 
-                  file=sys.stderr)
-            self.ser.write(b'\r\n')
-            time.sleep(0.5)
-            
-            # Read shell prompt
-            response = b''
-            for _ in range(20):
-                chunk = self.ser.read(256)
-                if chunk:
-                    response += chunk
-                time.sleep(0.1)
-            response_text = response.decode('utf-8', errors='replace')
-        
-        print("[handle_login] Login handling complete", file=sys.stderr)
-        return response_text
+    ser.write(b"\r\n")
+    buf2, m2 = read_until_any(ser, ["login:", "#", "$"], timeout=4)
+    print(f"   [wake_shell] nudge buf={buf2!r:.120} matched={m2!r}")
+    if m2 and "login:" in m2: _do_login(ser); return
+    if m2:                    print("   [wake_shell] shell confirmed after nudge"); return
+    print("   [wake_shell] WARNING: no prompt — proceeding anyway")
 
-    def check(self):
-        """
-        Check if board is reachable on serial console.
-        
-        Returns:
-            int: 0 if reachable, 1 if failed
-        """
-        try:
-            # Wake shell with new recovery sequence
-            response = self.wake_shell()
-            
-            # Handle login if needed
-            response = self.handle_login()
-            
-            # Check for any expected prompt
-            if any(prompt in response for prompt in ['#', '$', 'root@', 'login:', 'Password:']):
-                print(f"✅ Board reachable on {self.port}", file=sys.stdout)
-                return 0
-            else:
-                print(
-                    f"❌ Board reachable but no prompt detected\n"
-                    f"   Response: {response[:200]}", 
-                    file=sys.stdout
-                )
-                return 1
-        
-        except Exception as e:
-            print(f"❌ Board check failed: {e}", file=sys.stdout)
-            return 1
+def _do_login(ser):
+    print(f"   [wake_shell] logging in as '{BOARD_LOGIN_USER}'")
+    ser.write((BOARD_LOGIN_USER+"\n").encode()); time.sleep(1.0)
+    resp, _ = read_until_any(ser, ["password:","assword","#","$"], timeout=3)
+    if "assword" in resp.lower():
+        ser.write((BOARD_LOGIN_PASSWORD+"\n").encode()); time.sleep(1.0)
+        read_until_any(ser, ["#","$"], timeout=3)
+    ser.write(b"\r\n")
+    _, m = read_until_any(ser, ["#","$"], timeout=3)
+    print("   [wake_shell] logged in" if m else "   [wake_shell] WARNING: no shell after login")
 
-    def send_command(self, cmd, timeout=None):
-        """
-        Send a command and capture response.
+def run_command(ser, cmd, timeout=60):
+    send_line(ser, f"{cmd}; echo {END_MARKER}$?")
+    raw = read_until(ser, END_MARKER, timeout=timeout)
+    exit_code = 1; body = []; echoed = False
+    for line in raw.splitlines():
+        m = re.search(rf"{re.escape(END_MARKER)}(\d+)", line)
+        if m: exit_code = int(m.group(1)); continue
+        if not echoed and cmd in line: echoed = True; continue
+        if line.strip(): body.append(line)
+    return "\n".join(body), exit_code
 
-        Args:
-            cmd (str): Command to send
-            timeout (int): Override default timeout
+def cmd_check(args):
+    try:
+        ser = open_port(args.port, args.baud)
+        wake_shell(ser)
+        out, rc = run_command(ser, "echo PING_OK", timeout=10)
+        ser.close()
+        if "PING_OK" in out or rc == 0:
+            print(f"✅ Reachable: {args.port}"); sys.exit(0)
+        print(f"❌ No response. raw={out!r}"); sys.exit(1)
+    except Exception as e:
+        print(f"❌ {args.port}: {e}"); sys.exit(1)
 
-        Returns:
-            str: Response from board
-            
-        Raises:
-            RuntimeError: On communication failure
-        """
-        if not self.ser or not self.ser.is_open:
-            raise RuntimeError("Serial port not open")
+def cmd_run(args):
+    try:
+        ser = open_port(args.port, args.baud, timeout=args.timeout)
+        wake_shell(ser)
+        out, rc = run_command(ser, args.cmd, timeout=args.timeout)
+        print(out); ser.close(); sys.exit(rc)
+    except Exception as e:
+        print(f"❌ run failed: {e}"); sys.exit(1)
 
-        actual_timeout = timeout if timeout is not None else self.timeout
+def _writable(path):
+    if path.startswith("/tmp/"):
+        alt = "/run/"+path[5:]
+        print(f"   [push] /tmp→/run: {alt}"); return alt
+    return path
 
-        try:
-            print(f"[send_command] Sending: {cmd[:100]}", file=sys.stderr)
-            
-            # Send command with newline
-            cmd_bytes = (cmd + "\n").encode("utf-8", errors="replace")
-            self.ser.write(cmd_bytes)
-            self.ser.flush()
-            
-            # Wait for processing
-            time.sleep(0.2)
-            
-            # Capture response with retry loop
-            response = b""
-            start_time = time.time()
-            last_data_time = start_time
-            silence_threshold = 0.8  # 800ms of silence = response complete
-
-            while time.time() - start_time < actual_timeout:
-                try:
-                    chunk = self.ser.read(256)
-                    if chunk:
-                        response += chunk
-                        last_data_time = time.time()
-                        print(f"[send_command] Got chunk: {len(chunk)} bytes", file=sys.stderr)
-                    else:
-                        # No data in this read
-                        if response and (time.time() - last_data_time) > silence_threshold:
-                            print(f"[send_command] Silence detected, response complete", 
-                                  file=sys.stderr)
-                            break
-                        time.sleep(0.05)
-                except serial.SerialTimeoutException:
-                    continue
-
-            result = response.decode("utf-8", errors="replace").strip()
-            
-            if not result:
-                print(f"⚠️  No response to '{cmd}' after {actual_timeout}s", file=sys.stderr)
-            
-            print(f"[send_command] Response length: {len(result)} bytes", file=sys.stderr)
-            return result
-
-        except Exception as e:
-            print(f"❌ send_command('{cmd}') failed: {e}", file=sys.stderr)
-            raise
-
-    def push(self, local_file, remote_path):
-        """
-        Transfer file to board via heredoc.
-
-        Args:
-            local_file (str): Local file path
-            remote_path (str): Remote path on board
-
-        Returns:
-            int: 0 on success, 1 on failure
-        """
-        try:
-            # Read local file
-            if not os.path.exists(local_file):
-                raise FileNotFoundError(f"Local file not found: {local_file}")
-            
-            with open(local_file, 'r') as f:
-                content = f.read()
-            
-            file_size = len(content)
-            print(f"[push] Transferring {local_file} ({file_size} bytes) to {remote_path}...", 
-                  file=sys.stderr)
-            
-            # First, wake shell
-            self.wake_shell()
-            self.handle_login()
-            
-            # Send heredoc start
-            heredoc_marker = '___JENKINS_EOF___'
-            cmd = f"cat > {remote_path} << '{heredoc_marker}'\r\n"
-            print(f"[push] Sending heredoc start command", file=sys.stderr)
-            self.ser.write(cmd.encode())
-            self.ser.flush()
-            time.sleep(0.5)
-            
-            # Wait for heredoc prompt ("> ")
-            print(f"[push] Waiting for heredoc prompt...", file=sys.stderr)
-            response = b''
-            for attempt in range(20):
-                chunk = self.ser.read(256)
-                if chunk:
-                    response += chunk
-                time.sleep(0.1)
-            
-            response_text = response.decode('utf-8', errors='replace')
-            print(f"[push] Heredoc response: {response_text[:100]}", file=sys.stderr)
-            
-            if '> ' not in response_text:
-                raise RuntimeError(
-                    f"❌ Board did not show heredoc prompt\n"
-                    f"   Response: {response_text[:200]}\n"
-                    f"   Check if cat command is available on board"
-                )
-            
-            # Send file content line by line
-            print(f"[push] Sending file content ({len(content.split(chr(10)))} lines)...", 
-                  file=sys.stderr)
-            for line_num, line in enumerate(content.split('\n')):
-                self.ser.write((line + '\n').encode())
-                if (line_num + 1) % 10 == 0:
-                    print(f"[push] Sent {line_num + 1} lines", file=sys.stderr)
-                time.sleep(0.01)  # Small delay between lines
-            
-            # Send EOF marker
-            print(f"[push] Sending EOF marker '{heredoc_marker}'", file=sys.stderr)
-            self.ser.write(f"{heredoc_marker}\n".encode())
-            time.sleep(0.5)
-            
-            # Wait for shell prompt to return
-            print(f"[push] Waiting for shell prompt after transfer...", file=sys.stderr)
-            response = b''
-            for attempt in range(30):
-                chunk = self.ser.read(256)
-                if chunk:
-                    response += chunk
-                time.sleep(0.1)
-            
-            response_text = response.decode('utf-8', errors='replace')
-            
-            if '#' not in response_text and '$' not in response_text:
-                print(f"⚠️  Warning: No shell prompt detected after file transfer", 
-                      file=sys.stderr)
-                print(f"    Response: {response_text[:200]}", file=sys.stderr)
-                # Don't fail completely - file might have transferred OK
-            
-            print(f"✅ File transferred: {remote_path}", file=sys.stdout)
-            return 0
-
-        except Exception as e:
-            print(f"❌ Push failed: {e}", file=sys.stdout)
-            return 1
-
-    def run(self, cmd, timeout=None):
-        """
-        Execute command on board.
-
-        Args:
-            cmd (str): Command to run
-            timeout (int): Timeout in seconds
-
-        Returns:
-            int: 0 on success, 1 on failure
-        """
-        try:
-            # Wake shell first
-            self.wake_shell()
-            self.handle_login()
-            
-            # Send command with markers for easier parsing
-            marked_cmd = f"{cmd}; echo ___CMD_DONE___$?"
-            print(f"[run] Executing: {cmd[:80]}...", file=sys.stderr)
-            
-            # Send and capture
-            response = self.send_command(marked_cmd, timeout)
-            
-            # Check for success marker
-            if '___CMD_DONE___0' in response:
-                print(f"✅ Command succeeded", file=sys.stdout)
-                print(response, file=sys.stdout)
-                return 0
-            elif '___CMD_DONE___' in response:
-                # Command ran but returned non-zero exit code
-                print(f"⚠️  Command failed (check output)", file=sys.stdout)
-                print(response, file=sys.stdout)
-                return 1
-            else:
-                # Might have succeeded even without marker
-                print(f"✅ Command completed", file=sys.stdout)
-                print(response, file=sys.stdout)
-                return 0
-
-        except Exception as e:
-            print(f"❌ Run failed: {e}", file=sys.stdout)
-            return 1
-
-    def close(self):
-        """Close serial port."""
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-            print(f"[serial_helper] Closed {self.port}", file=sys.stderr)
-
+def cmd_push(args):
+    remote = _writable(args.remote_path)
+    try: content = open(args.local_file).read()
+    except OSError as e: print(f"❌ {e}"); sys.exit(1)
+    try:
+        ser = open_port(args.port, args.baud, timeout=args.timeout)
+        wake_shell(ser)
+        send_line(ser, f"cat > {remote} << '{HEREDOC_EOF}'")
+        buf, m = read_until_any(ser, [">"], timeout=5)
+        if not m:
+            print(f"❌ no heredoc prompt. buf={buf!r}"); ser.close(); sys.exit(1)
+        for line in content.splitlines():
+            send_line(ser, line); time.sleep(0.06)
+        send_line(ser, HEREDOC_EOF)
+        buf2, m2 = read_until_any(ser, ["#","$"], timeout=15)
+        if not m2:
+            print(f"❌ heredoc did not close. buf={buf2!r}"); ser.close(); sys.exit(1)
+        send_line(ser, f"echo {PUSH_MARKER}")
+        confirm = read_until(ser, PUSH_MARKER, timeout=10)
+        if PUSH_MARKER not in confirm:
+            print(f"❌ push marker missing. buf={confirm!r}"); ser.close(); sys.exit(1)
+        out, rc = run_command(ser, f"chmod +x {remote} && ls -l {remote}", timeout=10)
+        print(out); ser.close()
+        if rc == 0 and "No such file" not in out:
+            print(f"✅ pushed to {remote}"); sys.exit(0)
+        print(f"❌ file missing. out={out!r}"); sys.exit(1)
+    except Exception as e:
+        print(f"❌ push failed: {e}"); sys.exit(1)
 
 def main():
-    """Command-line interface."""
-    parser = argparse.ArgumentParser(
-        description="Serial helper for embedded board testing",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Check if board is reachable
-  %(prog)s check --port /dev/ttyUSB0 --baud 115200
-  
-  # Run a command
-  %(prog)s run --port /dev/ttyUSB0 --baud 115200 --cmd "uname -a" --timeout 10
-  
-  # Push a script
-  %(prog)s push --port /dev/ttyUSB0 --baud 115200 --local-file test.sh --remote-path /run/test.sh
-        """
-    )
-    
-    parser.add_argument('action', choices=['check', 'run', 'push'],
-                        help='Action to perform')
-    parser.add_argument('--port', required=True,
-                        help='Serial port (e.g., /dev/ttyUSB0)')
-    parser.add_argument('--baud', type=int, default=115200,
-                        help='Baud rate (default: 115200)')
-    parser.add_argument('--cmd',
-                        help='Command to run (for "run" action)')
-    parser.add_argument('--timeout', type=int, default=10,
-                        help='Command timeout in seconds (default: 10)')
-    parser.add_argument('--local-file',
-                        help='Local file to push (for "push" action)')
-    parser.add_argument('--remote-path',
-                        help='Remote file path (for "push" action)')
-    
-    args = parser.parse_args()
-    
-    try:
-        helper = SerialHelper(args.port, args.baud, args.timeout)
-        
-        if args.action == 'check':
-            exit_code = helper.check()
-        elif args.action == 'run':
-            if not args.cmd:
-                print("Error: --cmd required for 'run' action", file=sys.stderr)
-                exit_code = 1
-            else:
-                exit_code = helper.run(args.cmd, args.timeout)
-        elif args.action == 'push':
-            if not args.local_file or not args.remote_path:
-                print("Error: --local-file and --remote-path required for 'push' action", 
-                      file=sys.stderr)
-                exit_code = 1
-            else:
-                exit_code = helper.push(args.local_file, args.remote_path)
-        
-        helper.close()
-        sys.exit(exit_code)
-    
-    except KeyboardInterrupt:
-        print("\n\nInterrupted by user", file=sys.stderr)
-        sys.exit(130)
-    except Exception as e:
-        print(f"\n❌ Fatal error: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers(dest="action", required=True)
+    pc = sub.add_parser("check")
+    pc.add_argument("--port", required=True); pc.add_argument("--baud", default="115200")
+    pc.set_defaults(func=cmd_check)
+    pr = sub.add_parser("run")
+    pr.add_argument("--port", required=True); pr.add_argument("--baud", default="115200")
+    pr.add_argument("--cmd", required=True); pr.add_argument("--timeout", type=int, default=60)
+    pr.set_defaults(func=cmd_run)
+    pp = sub.add_parser("push")
+    pp.add_argument("--port", required=True); pp.add_argument("--baud", default="115200")
+    pp.add_argument("--local-file", required=True); pp.add_argument("--remote-path", required=True)
+    pp.add_argument("--timeout", type=int, default=60)
+    pp.set_defaults(func=cmd_push)
+    args = p.parse_args()
+    args.func(args)
 
 if __name__ == "__main__":
     main()
