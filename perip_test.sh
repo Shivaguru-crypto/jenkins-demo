@@ -42,7 +42,7 @@ fi
 
 echo ""
 echo "--- Recent kernel messages (last 30 lines) ---"
-dmesg 2>/dev/null | tail -30 || echo "INFO: dmesg not accessible (permissions or not present)"
+dmesg 2>/dev/null | tail -5 || echo "INFO: dmesg not accessible (permissions or not present)"
 
 echo ""
 echo "=== Peripheral Test Completed (Option A) ==="

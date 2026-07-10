@@ -57,7 +57,7 @@ def read_until(ser, marker, timeout=30):
     buf = ""
     start = time.time()
     last_data = time.time()
-    idle_limit = 1.5  # wait up to 1.5s of silence before giving up on more data
+    idle_limit = 4.0  # wait up to 1.5s of silence before giving up on more data
 
     while time.time() - start < timeout:
         n = ser.in_waiting
