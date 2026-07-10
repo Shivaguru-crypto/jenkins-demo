@@ -12,8 +12,8 @@ try:
 except ImportError:
     print("pip3 install pyserial --break-system-packages"); sys.exit(1)
 
-END_MARKER  = "XQ7DONE7QX"
-PUSH_MARKER = "XQ7PUSH7QX"
+END_MARKER  = "__DONE__"
+PUSH_MARKER = "__PUSH__"
 HEREDOC_EOF = "___JENKINS_EOF___"
 BOARD_LOGIN_USER     = "root"
 BOARD_LOGIN_PASSWORD = ""
@@ -52,13 +52,12 @@ def read_until(ser, marker, timeout=30):
     """
     Read until marker found or timeout.
     Uses idle-gap detection: keeps reading as long as data keeps arriving,
-    even if no data for up to 1s at a time (handles bursty dmesg output).
+    even if no data for up to 5s at a time (handles large dmesg output).
     """
     buf = ""
     start = time.time()
     last_data = time.time()
-    idle_limit = 10.0  # wait up to 1.5s of silence before giving up on more data
-
+    idle_limit = 10.0  
     while time.time() - start < timeout:
         n = ser.in_waiting
         if n:
@@ -89,19 +88,13 @@ def wake_shell(ser):
     print(f"   [wake_shell] buf={buf!r:.120} matched={m!r}")
 
     if m and "login:" in m:   _do_login(ser); return
-    if m:
-        print("   [wake_shell] shell confirmed")
-        ser.write(b"stty cols 200\n"); time.sleep(0.3); ser.read(ser.in_waiting or 1)
-        return
+    if m:                     print("   [wake_shell] shell confirmed"); return
 
     ser.write(b"\r\n")
     buf2, m2 = read_until_any(ser, ["login:", "#", "$"], timeout=4)
     print(f"   [wake_shell] nudge buf={buf2!r:.120} matched={m2!r}")
     if m2 and "login:" in m2: _do_login(ser); return
-    if m2:
-        print("   [wake_shell] shell confirmed after nudge")
-        ser.write(b"stty cols 200\n"); time.sleep(0.3); ser.read(ser.in_waiting or 1)
-        return
+    if m2:                    print("   [wake_shell] shell confirmed after nudge"); return
     print("   [wake_shell] WARNING: no prompt — proceeding anyway")
 
 def _do_login(ser):
