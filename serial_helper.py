@@ -12,8 +12,8 @@ try:
 except ImportError:
     print("pip3 install pyserial --break-system-packages"); sys.exit(1)
 
-END_MARKER  = "__DONE__"
-PUSH_MARKER = "__PUSH__"
+END_MARKER  = "XQ7DONE7QX"
+PUSH_MARKER = "XQ7PUSH7QX"
 HEREDOC_EOF = "___JENKINS_EOF___"
 BOARD_LOGIN_USER     = "root"
 BOARD_LOGIN_PASSWORD = ""
