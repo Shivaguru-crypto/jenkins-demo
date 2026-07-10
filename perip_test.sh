@@ -10,7 +10,24 @@
 # All test functions, order, and pin mappings below are unchanged.
 
 BOARD_ID="${1:-board1}"
-REPORT_FILE="testreport_${BOARD_ID}.txt"
+
+# /tmp is tmpfs and writable on essentially every embedded Linux image,
+# even when the rootfs itself is read-only. Use it directly instead of
+# probing directories (busybox `test -w` can misreport on some rootfs
+# setups, which is what silently broke the previous auto-detect version).
+REPORT_DIR=/tmp
+mkdir -p "$REPORT_DIR" 2>/dev/null
+REPORT_FILE="$REPORT_DIR/testreport_${BOARD_ID}.txt"
+
+echo "DEBUG: BOARD_ID=$BOARD_ID"
+echo "DEBUG: REPORT_FILE=$REPORT_FILE"
+if ! : > "$REPORT_FILE" 2>/tmp/perip_write_err.txt; then
+    echo "FATAL: cannot write to $REPORT_FILE"
+    cat /tmp/perip_write_err.txt 2>/dev/null
+    echo "DEBUG: mount table:"
+    cat /proc/mounts 2>/dev/null
+    exit 1
+fi
 
 # Define the function gpio_led_switch_test
 gpio_led_switch_test() {
@@ -439,7 +456,7 @@ pwm_test() {
 
 
 # removing report file if already exists otherwise it concates 
-if test -f "/data/"$REPORT_FILE""; then
+if test -f "$REPORT_FILE"; then
     rm "$REPORT_FILE"
 fi
 
@@ -655,5 +672,3 @@ echo "==========================================================================
 echo >> "$REPORT_FILE"
 echo
 echo
-
-
