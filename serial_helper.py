@@ -239,8 +239,10 @@ def wake_shell(ser):
             print("   [wake_shell] WARNING: no prompt — proceeding anyway")
             return
 
-    # After login, set wide terminal
+    # After login, set wide terminal and silence kernel messages
     ser.write(b"stty cols 200\n"); time.sleep(0.3)
+    ser.read(ser.in_waiting or 1)
+    ser.write(b"dmesg -n 1\n"); time.sleep(0.3)
     ser.read(ser.in_waiting or 1)
 
 
