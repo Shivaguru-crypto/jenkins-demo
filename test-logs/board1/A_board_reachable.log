@@ -1,4 +1,4 @@
-   [wake_shell] no prompt yet (buf='') — sending extra nudge
-   [wake_shell] WARNING: still no prompt. buf=''
-❌ No shell response on /dev/ttyUSB0
-Raw: ''
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
+   [wake_shell] shell confirmed
+✅ Reachable: /dev/ttyUSB0

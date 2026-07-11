@@ -1,3 +1,5 @@
-   [wake_shell] no prompt yet (buf='') — sending extra nudge
-   [wake_shell] WARNING: still no prompt. buf=''
-
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
+   [wake_shell] shell confirmed
+rugged-board-a5d2x
+root@rugged-board-a5d2x:~# 

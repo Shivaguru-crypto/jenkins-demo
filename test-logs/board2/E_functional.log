@@ -1,3 +1,24 @@
    [wake_shell] no prompt yet (buf='') — sending extra nudge
    [wake_shell] WARNING: still no prompt. buf=''
 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
+   [wake_shell] shell confirmed
+Linux rugged-board-a5d2x 4.9.151-linux4sam_5.8+-04825-g17ec695-dirty #7 Fri Nov 27 15:12:54 IST 2020 armv7l GNU/Linux
+root@rugged-board-a5d2x:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
+   [wake_shell] shell confirmed
+MemTotal:          55028 kB
+root@rugged-board-a5d2x:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
+   [wake_shell] shell confirmed
+Filesystem                Size      Used Available Use% Mounted on
+/dev/root                18.1M     18.1M         0 100% /
+root@rugged-board-a5d2x:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
+   [wake_shell] shell confirmed
+ 04:26:55 up  4:26,  load average: 0.00, 0.00, 0.00
+root@rugged-board-a5d2x:~# 
