@@ -168,7 +168,7 @@ def read_until(ser, marker, timeout=30):
     buf = ""
     start    = time.time()
     last_data = time.time()
-    idle_limit = 8.0
+    idle_limit = 4.0
 
     while time.time() - start < timeout:
         n = ser.in_waiting
@@ -239,10 +239,8 @@ def wake_shell(ser):
             print("   [wake_shell] WARNING: no prompt — proceeding anyway")
             return
 
-    # After login, set wide terminal and silence kernel messages
+    # After login, set wide terminal
     ser.write(b"stty cols 200\n"); time.sleep(0.3)
-    ser.read(ser.in_waiting or 1)
-    ser.write(b"dmesg -n 1\n"); time.sleep(0.3)
     ser.read(ser.in_waiting or 1)
 
 
