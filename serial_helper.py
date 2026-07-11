@@ -168,7 +168,7 @@ def read_until(ser, marker, timeout=30):
     buf = ""
     start    = time.time()
     last_data = time.time()
-    idle_limit = 4.0
+    idle_limit = 8.0
 
     while time.time() - start < timeout:
         n = ser.in_waiting
@@ -176,6 +176,11 @@ def read_until(ser, marker, timeout=30):
             buf += ser.read(n).decode(errors="ignore")
             last_data = time.time()
             if marker in buf:
+                # Marker found — wait briefly for the digit suffix to arrive
+                time.sleep(0.15)
+                n2 = ser.in_waiting
+                if n2:
+                    buf += ser.read(n2).decode(errors="ignore")
                 break
         else:
             if buf and (time.time() - last_data) > idle_limit:
