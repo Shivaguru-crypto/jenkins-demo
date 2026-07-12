@@ -1,5 +1,4 @@
    [wake_shell] sending recovery sequence
-   [wake_shell] buf='\x00\x00\r\r\nPoky (Yocto Project Reference Distro) 2.5.2 rugged-board-a5d2x-sd1 ttyS0\r\n\r\nrugged-board-a5d2x-sd1 lo matched='login:'
-   [wake_shell] login prompt — sending 'root'
-   [wake_shell] logged in ✅
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
+   [wake_shell] shell confirmed
 ✅ Reachable: /dev/ttyUSB1
