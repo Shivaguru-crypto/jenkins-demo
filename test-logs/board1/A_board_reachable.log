@@ -1,4 +1,5 @@
    [wake_shell] sending recovery sequence
-   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
-   [wake_shell] shell confirmed
+   [wake_shell] buf="\x00\x00\r\n\rprocess '/sbin/getty 11200 ttyS0' (pid 145) exited. Scheduling for restart.\r\n\rstarting pid 147, tty '/ matched='login:'
+   [wake_shell] login prompt — sending 'root'
+   [wake_shell] logged in ✅
 ✅ Reachable: /dev/ttyUSB0
