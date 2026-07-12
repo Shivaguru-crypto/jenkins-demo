@@ -1,4 +1,4 @@
    [wake_shell] sending recovery sequence
    [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
    [wake_shell] shell confirmed
-✅ Reachable: /dev/ttyUSB0
+ Reachable: /dev/ttyUSB0
