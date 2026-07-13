@@ -14,13 +14,13 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 # ---------------------------------------------------------------------------
 # Colours matching the uploaded template
 # ---------------------------------------------------------------------------
-DARK_BLUE   = "1F4E79"   # title bar, test header row, output row
-MED_BLUE    = "2E75B6"   # TEST RESULTS section header
-LIGHT_GREY  = "F2F2F2"   # alternating metadata rows
-PASS_GREEN  = "C6EFCE"   # PASSED cell background
-PASS_FONT   = "1E7B34"   # PASSED cell font colour
-FAIL_RED    = "FFC7CE"   # FAILED cell background
-FAIL_FONT   = "9C0006"   # FAILED cell font colour
+DARK_BLUE   = "1F4E79"
+MED_BLUE    = "2E75B6"
+LIGHT_GREY  = "F2F2F2"
+PASS_GREEN  = "C6EFCE"
+PASS_FONT   = "1E7B34"
+FAIL_RED    = "FFC7CE"
+FAIL_FONT   = "9C0006"
 WHITE       = "FFFFFF"
 
 def fill(hex_col):
@@ -33,7 +33,6 @@ def align(h="center", v="center", wrap=True):
     return Alignment(horizontal=h, vertical=v, wrap_text=wrap)
 
 def read_log(path_pattern):
-    """Read first matching log file, return content or empty string."""
     files = glob.glob(path_pattern)
     if not files:
         return ""
@@ -43,7 +42,6 @@ def read_log(path_pattern):
         return ""
 
 def result_of(log_content):
-    """Determine PASS/FAIL from log content."""
     if not log_content:
         return "SKIPPED"
     if "❌" in log_content or "timed out" in log_content or "FAIL" in log_content:
@@ -51,12 +49,10 @@ def result_of(log_content):
     return "PASSED ✅"
 
 def build_sheet(wb, sheet_name, board_id, board_label, board_port,
-                build_number, build_time, status):
+                build_number, build_time, status, agent_name):
     ws = wb.create_sheet(title=sheet_name)
 
-    # ------------------------------------------------------------------
     # Row 1 — Title
-    # ------------------------------------------------------------------
     ws.merge_cells("A1:E1")
     ws["A1"] = "JENKINS BOARD TEST REPORT"
     ws["A1"].fill      = fill(DARK_BLUE)
@@ -64,15 +60,14 @@ def build_sheet(wb, sheet_name, board_id, board_label, board_port,
     ws["A1"].alignment = align("center")
     ws.row_dimensions[1].height = 27.75
 
-    # ------------------------------------------------------------------
     # Rows 2-6 — Metadata
-    # ------------------------------------------------------------------
+    # CHANGE: "Agent Used" now uses agent_name parameter instead of hardcoded "slave-1"
     meta = [
         ("Build Number", f"#{build_number}"),
         ("Build Time",   build_time),
         ("Board Port",   board_port),
         ("Board User",   "root"),
-        ("Agent Used",   "slave-1"),
+        ("Agent Used",   agent_name),          # ← CHANGED: was "slave-1" for both
     ]
     for i, (label, value) in enumerate(meta, start=2):
         bg = LIGHT_GREY if i % 2 == 0 else WHITE
@@ -90,9 +85,7 @@ def build_sheet(wb, sheet_name, board_id, board_label, board_port,
     # Row 7 blank
     ws.row_dimensions[7].height = 8
 
-    # ------------------------------------------------------------------
     # Row 8 — TEST RESULTS section header
-    # ------------------------------------------------------------------
     ws.merge_cells("A8:E8")
     ws["A8"] = "TEST RESULTS"
     ws["A8"].fill      = fill(MED_BLUE)
@@ -100,9 +93,7 @@ def build_sheet(wb, sheet_name, board_id, board_label, board_port,
     ws["A8"].alignment = align("center")
     ws.row_dimensions[8].height = 21.75
 
-    # ------------------------------------------------------------------
     # Row 9 — Stage headers
-    # ------------------------------------------------------------------
     stages = [
         "1. Board Reachable",
         "2. Serial Session",
@@ -119,9 +110,7 @@ def build_sheet(wb, sheet_name, board_id, board_label, board_port,
         c.alignment = align("center")
     ws.row_dimensions[9].height = 30
 
-    # ------------------------------------------------------------------
     # Read log files
-    # ------------------------------------------------------------------
     logs = {
         "A": read_log(f"test-logs/{board_id}/A_*.log"),
         "B": read_log(f"test-logs/{board_id}/B_*.log"),
@@ -130,9 +119,7 @@ def build_sheet(wb, sheet_name, board_id, board_label, board_port,
         "E": read_log(f"test-logs/{board_id}/E_*.log"),
     }
 
-    # ------------------------------------------------------------------
     # Row 10 — Log output content
-    # ------------------------------------------------------------------
     for col, log in logs.items():
         c = ws[f"{col}10"]
         clean_log = ''.join(ch for ch in (log if log else "(no log)") if ord(ch) >= 32 or ch in '\t\n\r')
@@ -142,9 +129,7 @@ def build_sheet(wb, sheet_name, board_id, board_label, board_port,
         c.alignment = align("left", wrap=True)
     ws.row_dimensions[10].height = 345.5
 
-    # ------------------------------------------------------------------
     # Row 11 — PASSED / FAILED per stage
-    # ------------------------------------------------------------------
     results = {}
     for col, log in logs.items():
         r = result_of(log)
@@ -161,9 +146,7 @@ def build_sheet(wb, sheet_name, board_id, board_label, board_port,
     # Row 12 blank
     ws.row_dimensions[12].height = 13.8
 
-    # ------------------------------------------------------------------
     # Row 13 — Overall status
-    # ------------------------------------------------------------------
     ws.merge_cells("A13:E13")
     all_pass = all("PASSED" in v for v in results.values())
     overall  = "STATUS: ALL TESTS PASSED ✅" if all_pass else "STATUS: SOME TESTS FAILED ❌"
@@ -175,9 +158,7 @@ def build_sheet(wb, sheet_name, board_id, board_label, board_port,
     ws["A13"].alignment = align("center")
     ws.row_dimensions[13].height = 25.5
 
-    # ------------------------------------------------------------------
-    # Column widths — match uploaded template
-    # ------------------------------------------------------------------
+    # Column widths
     ws.column_dimensions["A"].width = 58.32
     ws.column_dimensions["B"].width = 51.04
     ws.column_dimensions["C"].width = 50.71
@@ -192,12 +173,13 @@ def main():
     build_url    = sys.argv[2] if len(sys.argv) > 2 else ""
     status       = sys.argv[3] if len(sys.argv) > 3 else "UNKNOWN"
 
-    now       = datetime.datetime.now()
+    now        = datetime.datetime.now()
     build_time = now.strftime("%A %d %B %Y %I:%M:%S %p IST")
 
     wb = openpyxl.Workbook()
-    wb.remove(wb.active)   # remove default empty sheet
+    wb.remove(wb.active)
 
+    # CHANGE: agent_name passed as "board1" and "board2" respectively
     build_sheet(wb,
         sheet_name   = "Board1 - PHYTEC AM335x",
         board_id     = "board1",
@@ -206,6 +188,7 @@ def main():
         build_number = build_number,
         build_time   = build_time,
         status       = status,
+        agent_name   = "board1",              # ← CHANGED: was "slave-1"
     )
 
     build_sheet(wb,
@@ -216,6 +199,7 @@ def main():
         build_number = build_number,
         build_time   = build_time,
         status       = status,
+        agent_name   = "board2",              # ← CHANGED: was "slave-1"
     )
 
     os.makedirs("test-reports", exist_ok=True)
