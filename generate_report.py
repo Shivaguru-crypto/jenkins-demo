@@ -135,10 +135,11 @@ def build_sheet(wb, sheet_name, board_id, board_label, board_port,
     # ------------------------------------------------------------------
     for col, log in logs.items():
         c = ws[f"{col}10"]
-        c.value     = log if log else "(no log)"
-        c.fill      = fill(DARK_BLUE)
-        c.font      = font(bold=True, color=WHITE, size=11)
-        c.alignment = align("center", wrap=True)
+        clean_log = ''.join(ch for ch in (log if log else "(no log)") if ord(ch) >= 32 or ch in '\t\n\r')
+        c.value     = clean_log
+        c.fill      = fill(WHITE)
+        c.font      = Font(bold=False, color="000000", size=10)
+        c.alignment = align("left", wrap=True)
     ws.row_dimensions[10].height = 345.5
 
     # ------------------------------------------------------------------
