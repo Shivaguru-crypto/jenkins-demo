@@ -215,3 +215,27 @@ root@rugged-board-a5d2x:~#
 ls: /dev/mmcblk*: No such file or directory
 NO_MMC
 root@rugged-board-a5d2x:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
+   [wake_shell] shell confirmed
+PC21       export     gpiochip0  unexport
+GPIO_OK
+root@rugged-board-a5d2x:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
+   [wake_shell] shell confirmed
+/dev/ttyS0  /dev/ttyS1  /dev/ttyS2  /dev/ttyS3  /dev/ttyS4
+UART_OK
+root@rugged-board-a5d2x:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
+   [wake_shell] shell confirmed
+/dev/i2c-0
+I2C_OK
+root@rugged-board-a5d2x:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
+   [wake_shell] shell confirmed
+ls: /dev/mmcblk*: No such file or directory
+NO_MMC
+root@rugged-board-a5d2x:~# 
