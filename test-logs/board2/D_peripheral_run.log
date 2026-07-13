@@ -51,3 +51,29 @@ root@rugged-board-a5d2x-sd1:~#
 /dev/mmcblk1    /dev/mmcblk1p1  /dev/mmcblk1p2
 MMC_OK
 root@rugged-board-a5d2x-sd1:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
+   [wake_shell] shell confirmed
+QX$?
+PC21       export     gpiochip0  unexport
+GPIO_OK
+root@rugged-board-a5d2x-sd1:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
+   [wake_shell] shell confirmed
+/dev/ttyS0  /dev/ttyS1  /dev/ttyS2  /dev/ttyS3  /dev/ttyS4
+UART_OK
+root@rugged-board-a5d2x-sd1:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
+   [wake_shell] shell confirmed
+/dev/i2c-0
+I2C_OK
+root@rugged-board-a5d2x-sd1:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
+   [wake_shell] shell confirmed
+[A[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[K?
+/dev/mmcblk1    /dev/mmcblk1p1  /dev/mmcblk1p2
+MMC_OK
+root@rugged-board-a5d2x-sd1:~# 
