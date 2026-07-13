@@ -217,7 +217,7 @@ def wake_shell(ser):
     ser.write((HEREDOC_EOF + "\n").encode());   time.sleep(0.2)  # close heredoc
     ser.write(b"\r\n");                         time.sleep(0.1)  # prod prompt
 
-    buf, m = read_until_any(ser, ["login:", "#", "$"], timeout=4)
+    buf, m = read_until_any(ser, ["login:", "#", "$"], timeout=10)
     print(f"   [wake_shell] buf={buf!r:.120} matched={m!r}")
 
     if m and "login:" in m:
@@ -231,7 +231,7 @@ def wake_shell(ser):
     else:
         # Second nudge
         ser.write(b"\r\n")
-        buf2, m2 = read_until_any(ser, ["login:", "#", "$"], timeout=4)
+        buf2, m2 = read_until_any(ser, ["login:", "#", "$"], timeout=10)
         print(f"   [wake_shell] nudge buf={buf2!r:.120} matched={m2!r}")
         if m2 and "login:" in m2:
             _do_login(ser)
