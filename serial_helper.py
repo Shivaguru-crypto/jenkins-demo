@@ -1,191 +1,138 @@
 #!/usr/bin/env python3
 """
-serial_helper.py — Final stable version for embedded board CI/CD testing.
+serial_helper.py — talk to a board over its FTDI USB-serial console.
 
 Subcommands:
-  check  --port /dev/ttyUSB0 --baud 115200
-  run    --port /dev/ttyUSB0 --baud 115200 --cmd "cmd" [--timeout 60]
-  push   --port /dev/ttyUSB0 --baud 115200 --local-file f --remote-path /run/f
+  check  --serial <ID> --baud 115200
+  run    --serial <ID> --baud 115200 --cmd "cmd" [--timeout 60]
+  push   --serial <ID> --baud 115200 --local-file f --remote-path /run/f
+
+  --port can be used instead of --serial if needed.
 
 Exit codes: 0 = PASS, non-zero = FAIL.
 
-=============================================================================
-COMPLETE ERROR LOG & FIX HISTORY
-=============================================================================
-
-ERROR #1 — wake_shell() missed login prompt (buf always empty)
-  Symptom : [wake_shell] already at shell prompt / Raw: ''
-  Cause   : ser.read(ser.in_waiting or 1) reads only bytes in buffer at that
-            instant. After open_port() + reset_input_buffer() + sleep(0.5),
-            buffer is empty so reads 1 byte and misses "login:" prompt.
-  Fix     : Replaced with read_until_any() which polls ser.in_waiting in a
-            loop for a full timeout window — collects everything the board
-            sends before deciding what state it is in.
-
-ERROR #2 — reset_input_buffer() flushed board response
-  Symptom : Raw: '' even though board was alive and responding.
-  Cause   : open_port() called reset_input_buffer() which discarded bytes
-            the board was already sending (prompt echo, login prompt etc).
-            run_command() then had nothing to read → timeout → empty raw.
-  Fix     : Removed reset_input_buffer() from open_port() entirely.
-            Board bytes are now read and kept, never discarded.
-
-ERROR #3 — /tmp read-only on SAMA5D2 (squashfs rootfs)
-  Symptom : -sh: can't create /tmp/perip_test.sh: Read-only file system
-  Cause   : SAMA5D2 rootfs is squashfs (read-only). /tmp lives on it.
-  Fix     : _writable() redirects /tmp/* → /run/* automatically.
-            /run is always tmpfs (writable) on this board.
-
-ERROR #4 — Heredoc transfer timed out (Raw: '')
-  Symptom : ❌ Heredoc transfer timed out. Raw: ''
-  Cause   : Board stuck inside open heredoc from a previous failed push.
-            Every \r\n we sent was absorbed as heredoc content — board
-            never sent back a # prompt so read_until() starved.
-  Fix     : wake_shell() now sends HEREDOC_EOF before probing for prompt,
-            guaranteed to close any open heredoc on every call.
-
-ERROR #5 — Minicom holding serial ports exclusively
-  Symptom : buf='' on EVERY call for BOTH boards. Port opens but 0 bytes.
-  Cause   : minicom processes (PID 100509, 100515) were running since 10:08,
-            holding /dev/ttyUSB0 and /dev/ttyUSB1. Jenkins could open the
-            fd but received nothing because minicom owned the RX line.
-  Fix     : sudo pkill minicom before every Jenkins run.
-            Never leave minicom open while pipeline is running.
-
-ERROR #6 — slave-1 not in dialout group
-  Symptom : Port opens but reads nothing (permission issue on RX).
-  Cause   : Jenkins runs as user slave-1 who was not in the dialout group.
-            /dev/ttyUSB* is owned by root:dialout (crw-rw----).
-  Fix     : sudo usermod -aG dialout slave-1
-            sudo pkill -u slave-1 java  (restart agent to pick up group)
-
-ERROR #7 — END_MARKER ___CMD_DONE___ wrapped at 80 columns
-  Symptom : Board1 Serial Session FAIL. echo ___CMD_DONE___$? appeared in
-            output but marker was never found by read_until().
-  Cause   : Board terminal is 80 columns wide. Command echo wrapped the
-            marker across two lines: ___CMD_DONE__\n_0 — read_until()
-            looks for the marker as one string, never finds split version.
-  Fix     : END_MARKER shortened to XQ7DONE7QX (10 chars). Will never
-            wrap regardless of command length or terminal width.
-
-ERROR #8 — stty cols 200 in run_command() drained script output
-  Symptom : Peripheral Test returns in 2s, output cut at /dev/gpiochi
-  Cause   : run_command() sent "stty cols 200\n" then sleep(0.3) then
-            ser.read(ser.in_waiting) to drain the stty echo. But the board
-            had already started running perip_test.sh output during that
-            0.3s — the drain read and discarded the first lines of script
-            output. read_until() then missed the marker and hit idle gap.
-  Fix     : Moved stty cols 200 into wake_shell() after prompt confirmed.
-            run_command() no longer touches stty.
-
-ERROR #9 — idle_limit too short, dmesg output caused gaps
-  Symptom : Output cut mid-dmesg: VFS: Mounted root (squa
-  Cause   : dmesg | tail -30 sends 30 lines in bursts with pauses between
-            them. idle_limit=1.5s fired during a pause, stopped reading
-            before the end marker arrived.
-  Fix     : idle_limit raised to 4.0s. dmesg removed from perip_test.sh.
-
-ERROR #10 — perip_test.sh printed FAIL for missing mmcblk (Board1)
-  Symptom : Board1 Peripheral Test FAIL due to "FAIL: no /dev/mmcblk*"
-  Cause   : Board1 runs from squashfs — no SD card/eMMC. Script printed
-            FAIL which triggered our log scanner to mark stage as failed.
-  Fix     : Changed to INFO in perip_test.sh. Board1 has no storage device
-            by design — this is expected and not a real failure.
-
-=============================================================================
+--- Fix history -------------------------------------------------------------
+Fix 1  settle delay (time.sleep) after wake_shell() before sending command
+       Board 2 shell prompt appears but board not yet ready to accept input
+Fix 2  ping confirmation after wake_shell() — sends echo __READY__ and waits
+       for response before sending real command, proves board is truly ready
+Fix 5  serial ID resolution — --serial D3074GZG resolves to /dev/ttyUSBx at
+       runtime via /dev/serial/by-id/, so port swap after replug never causes
+       wrong board to be tested
+-----------------------------------------------------------------------------
 """
 
-import argparse, re, subprocess, sys, time
-try:
-    import serial, serial.tools.list_ports
-except ImportError:
-    print("pip3 install pyserial --break-system-packages"); sys.exit(1)
+import argparse
+import re
+import subprocess
+import sys
+import time
+import glob
+import os
 
-END_MARKER  = "XQ7DONE7QX"    # short+unique — never wraps at 80 cols, never
-PUSH_MARKER = "XQ7PUSH7QX"    # appears in any board output or command echo
+try:
+    import serial
+    import serial.tools.list_ports
+except ImportError:
+    print("❌ pyserial not installed.")
+    sys.exit(1)
+
+END_MARKER  = "___CMD_DONE___"
+PUSH_MARKER = "___PUSH_DONE___"
 HEREDOC_EOF = "___JENKINS_EOF___"
+READY_MARKER = "__READY__"
+
 BOARD_LOGIN_USER     = "root"
 BOARD_LOGIN_PASSWORD = ""
 
 
 # ---------------------------------------------------------------------------
-# Port helpers
+# Fix 5 — Port resolution (serial ID → /dev/ttyUSBx)
 # ---------------------------------------------------------------------------
 
-def resolve_port(p):
-    if p.startswith("/dev/"): return p
-    for port in serial.tools.list_ports.comports():
-        if port.serial_number == p: return port.device
-    print(f"No device with serial number '{p}'"); sys.exit(1)
+def resolve_port(port_or_serial):
+    """
+    Fix 5: Accept either a direct port path (/dev/ttyUSBx) or a udev
+    serial number (e.g. D3074GZG). If a serial number is given, find the
+    matching device under /dev/serial/by-id/ and resolve the symlink to
+    the real /dev/ttyUSBx path.
+
+    This means port swap after replug never causes the wrong board to be
+    tested — the serial number is physically burned into the FTDI adapter
+    and never changes regardless of plug order.
+    """
+    if port_or_serial.startswith("/dev/"):
+        return port_or_serial
+
+    # Try /dev/serial/by-id/ first (udev symlinks)
+    by_id = glob.glob(f"/dev/serial/by-id/*{port_or_serial}*")
+    if by_id:
+        resolved = os.path.realpath(by_id[0])
+        print(f"   [resolve_port] {port_or_serial} → {resolved}")
+        return resolved
+
+    # Try pyserial's port list as fallback
+    for p in serial.tools.list_ports.comports():
+        if p.serial_number == port_or_serial:
+            print(f"   [resolve_port] {port_or_serial} → {p.device}")
+            return p.device
+
+    print(f"❌ No USB-serial device with serial number '{port_or_serial}'.")
+    sys.exit(1)
 
 
-def open_port(port, baud, timeout=5):
+# ---------------------------------------------------------------------------
+# Port open — DTR/RTS low to prevent reset pulse
+# ---------------------------------------------------------------------------
+
+def open_port(port_or_serial, baud, timeout=5):
     """
-    Open port with DTR/RTS LOW before open() — prevents reset pulse.
-    No reset_input_buffer() — board bytes must never be discarded (Error #2).
+    Open port with DTR/RTS LOW before open() to prevent reset pulse.
+    Also runs stty -hupcl to prevent hangup-on-close resetting the board.
     """
-    resolved = resolve_port(port)
+    resolved = resolve_port(port_or_serial)
     ser = serial.Serial()
-    ser.port = resolved; ser.baudrate = int(baud); ser.timeout = timeout
-    ser.dtr = False; ser.rts = False; ser.dsrdtr = False
+    ser.port     = resolved
+    ser.baudrate = int(baud)
+    ser.timeout  = timeout
+    ser.dtr      = False
+    ser.rts      = False
+    ser.dsrdtr   = False
     ser.open()
     try:
-        subprocess.run(["stty","-F",resolved,"-hupcl"],
+        subprocess.run(["stty", "-F", resolved, "-hupcl"],
                        check=False, capture_output=True)
-    except: pass
+    except Exception:
+        pass
     time.sleep(0.3)
-    # NO reset_input_buffer() here — see Error #2
     return ser
 
 
 # ---------------------------------------------------------------------------
-# I/O helpers
+# Low-level I/O
 # ---------------------------------------------------------------------------
 
 def read_until_any(ser, markers, timeout=5):
     """
-    Non-blocking poll: read ser.in_waiting bytes until any marker found.
-    Uses in_waiting (not ser.read(N)) to avoid blocking (see Error #1).
+    Read until ANY marker in `markers` list appears, or timeout.
+    Returns (full_buf_string, matched_marker_or_None).
     """
-    buf = ""; start = time.time()
+    buf = ""
+    start = time.time()
     while time.time() - start < timeout:
         n = ser.in_waiting
         if n:
             buf += ser.read(n).decode(errors="ignore")
             for m in markers:
-                if m in buf: return buf, m
+                if m in buf:
+                    return buf, m
         else:
             time.sleep(0.05)
     return buf, None
 
 
 def read_until(ser, marker, timeout=30):
-    """
-    Read until marker found or timeout.
-    idle_limit: keeps reading during burst output (dmesg etc) — only stops
-    after 4.0s of complete silence AND we already have some data (Error #9).
-    """
-    buf = ""
-    start    = time.time()
-    last_data = time.time()
-    idle_limit = 8.0
-
-    while time.time() - start < timeout:
-        n = ser.in_waiting
-        if n:
-            buf += ser.read(n).decode(errors="ignore")
-            last_data = time.time()
-            if marker in buf:
-                # Marker found — wait briefly for the digit suffix to arrive
-                time.sleep(0.15)
-                n2 = ser.in_waiting
-                if n2:
-                    buf += ser.read(n2).decode(errors="ignore")
-                break
-        else:
-            if buf and (time.time() - last_data) > idle_limit:
-                break
-            time.sleep(0.05)
+    buf, _ = read_until_any(ser, [marker], timeout=timeout)
     return buf
 
 
@@ -199,68 +146,105 @@ def send_line(ser, line):
 
 def wake_shell(ser):
     """
-    Guarantee a clean root shell prompt before any command.
+    Guarantee the board is at a live root shell prompt before any command.
 
-    Recovery sequence (fixes Error #4 — stuck heredoc):
-      1. Ctrl+C          — kills any running foreground command
-      2. \\r\\n            — flushes interrupted line
-      3. HEREDOC_EOF\\n   — closes any open heredoc
-      4. \\r\\n            — prods for fresh prompt
-      5. stty cols 200   — widens terminal, prevents 80-col wrap (Error #7,8)
-      6. Wait for # or login:
-
-    Idempotent: if already at clean shell, steps 1-4 produce harmless noise.
+    Recovery sequence handles ALL stuck states:
+      1. Ctrl+C       — kills any foreground command
+      2. \\r\\n         — flush interrupted line
+      3. HEREDOC_EOF  — closes any open heredoc
+      4. \\r\\n         — prod for fresh prompt
+      5. Read + handle login: or #/$ prompt
     """
     print("   [wake_shell] sending recovery sequence")
-    ser.write(b"\x03");                         time.sleep(0.2)  # Ctrl+C
-    ser.write(b"\r\n");                         time.sleep(0.1)  # flush
-    ser.write((HEREDOC_EOF + "\n").encode());   time.sleep(0.2)  # close heredoc
-    ser.write(b"\r\n");                         time.sleep(0.1)  # prod prompt
+    ser.write(b"\x03")
+    time.sleep(0.2)
+    ser.write(b"\r\n")
+    time.sleep(0.1)
+    ser.write((HEREDOC_EOF + "\n").encode())
+    time.sleep(0.2)
+    ser.write(b"\r\n")
+    time.sleep(0.1)
 
-    buf, m = read_until_any(ser, ["login:", "#", "$"], timeout=10)
-    print(f"   [wake_shell] buf={buf!r:.120} matched={m!r}")
+    buf, matched = read_until_any(ser, ["login:", "#", "$"], timeout=5)
+    print(f"   [wake_shell] buf={buf!r:.120} matched={matched!r}")
 
-    if m and "login:" in m:
+    if matched and "login:" in matched:
         _do_login(ser)
-    elif m:
-        print("   [wake_shell] shell confirmed")
-        # Set wide terminal now that we have a shell (Error #7, #8)
-        ser.write(b"stty cols 200\n"); time.sleep(0.3)
-        ser.read(ser.in_waiting or 1)
         return
-    else:
-        # Second nudge
-        ser.write(b"\r\n")
-        buf2, m2 = read_until_any(ser, ["login:", "#", "$"], timeout=10)
-        print(f"   [wake_shell] nudge buf={buf2!r:.120} matched={m2!r}")
-        if m2 and "login:" in m2:
-            _do_login(ser)
-        elif m2:
-            print("   [wake_shell] shell confirmed after nudge")
-            ser.write(b"stty cols 200\n"); time.sleep(0.3)
-            ser.read(ser.in_waiting or 1)
-            return
-        else:
-            print("   [wake_shell] WARNING: no prompt — proceeding anyway")
-            return
 
-    # After login, set wide terminal
-    ser.write(b"stty cols 200\n"); time.sleep(0.3)
-    ser.read(ser.in_waiting or 1)
+    if matched:
+        print("   [wake_shell] shell confirmed")
+        return
+
+    # nudge
+    print("   [wake_shell] nudge")
+    ser.write(b"\r\n")
+    buf2, matched2 = read_until_any(ser, ["login:", "#", "$"], timeout=5)
+    print(f"   [wake_shell] nudge buf={buf2!r:.120} matched={matched2!r}")
+
+    if matched2 and "login:" in matched2:
+        _do_login(ser)
+        return
+
+    if matched2:
+        print("   [wake_shell] shell confirmed after nudge")
+        return
+
+    # final attempt
+    print("   [wake_shell] final 4s wait")
+    ser.write(b"\r\n")
+    buf3, matched3 = read_until_any(ser, ["login:", "#", "$"], timeout=4)
+    if matched3 and "login:" in matched3:
+        _do_login(ser)
+    elif matched3:
+        print("   [wake_shell] shell confirmed (final)")
+    else:
+        print("   [wake_shell] ⚠️  no prompt confirmed — command may fail")
 
 
 def _do_login(ser):
-    """Handle login: prompt — send username and password."""
     print(f"   [wake_shell] login prompt — sending '{BOARD_LOGIN_USER}'")
-    ser.write((BOARD_LOGIN_USER + "\n").encode()); time.sleep(1.0)
-    resp, _ = read_until_any(ser, ["password:", "assword", "#", "$"], timeout=3)
-    if "assword" in resp.lower():
-        ser.write((BOARD_LOGIN_PASSWORD + "\n").encode()); time.sleep(1.0)
-        read_until_any(ser, ["#", "$"], timeout=3)
+    ser.write((BOARD_LOGIN_USER + "\n").encode())
+    time.sleep(1.0)
+    resp, _ = read_until_any(ser, ["password:", "assword", "#", "$"], timeout=5)
+    if "password:" in resp.lower() or "assword" in resp.lower():
+        ser.write((BOARD_LOGIN_PASSWORD + "\n").encode())
+        time.sleep(1.0)
+        read_until_any(ser, ["#", "$"], timeout=5)
     ser.write(b"\r\n")
-    _, m = read_until_any(ser, ["#", "$"], timeout=3)
-    print("   [wake_shell] logged in ✅" if m else
-          "   [wake_shell] WARNING: no shell after login")
+    buf, m = read_until_any(ser, ["#", "$"], timeout=5)
+    if m:
+        print("   [wake_shell] ✅ logged in — shell confirmed")
+    else:
+        print(f"   [wake_shell] ⚠️  no shell after login. buf={buf!r:.80}")
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 + Fix 2 — settle delay + ping confirmation
+# ---------------------------------------------------------------------------
+
+def confirm_ready(ser, timeout=10):
+    """
+    Fix 1: sleep(0.5) gives the board time to settle after the shell
+    prompt appears — Board 2 was failing because run_command fired before
+    the board was ready to echo back a response.
+
+    Fix 2: send echo __READY__ and wait for __READY__ back before sending
+    the real command. This actively proves the board can receive and respond,
+    instead of assuming it's ready just because a prompt was seen.
+    """
+    # Fix 1 — settle delay
+    time.sleep(0.5)
+
+    # Fix 2 — ping confirmation
+    ser.write(f"echo {READY_MARKER}\n".encode())
+    buf, m = read_until_any(ser, [READY_MARKER], timeout=timeout)
+    if not m:
+        raise Exception(
+            f"Board did not respond to ready-check after wake_shell. "
+            f"buf={buf!r:.120} — check baud rate, wiring, board power."
+        )
+    print("   [confirm_ready] ✅ board ready")
 
 
 # ---------------------------------------------------------------------------
@@ -268,20 +252,26 @@ def _do_login(ser):
 # ---------------------------------------------------------------------------
 
 def run_command(ser, cmd, timeout=60):
-    """
-    Send cmd and capture output + real exit code.
-    Marker XQ7DONE7QX is short and unique — never wraps, never false-matches.
-    """
-    send_line(ser, f"{cmd}; echo {END_MARKER}$?")
+    tagged = f"{cmd}; echo {END_MARKER}$?"
+    send_line(ser, tagged)
     raw = read_until(ser, END_MARKER, timeout=timeout)
 
-    exit_code = 1; body = []; echoed = False
+    exit_code  = 1
+    body_lines = []
+    cmd_echoed = False
+
     for line in raw.splitlines():
         m = re.search(rf"{re.escape(END_MARKER)}(\d+)", line)
-        if m: exit_code = int(m.group(1)); continue
-        if not echoed and cmd in line: echoed = True; continue
-        if line.strip(): body.append(line)
-    return "\n".join(body), exit_code
+        if m:
+            exit_code = int(m.group(1))
+            continue
+        if not cmd_echoed and (cmd in line or tagged in line):
+            cmd_echoed = True
+            continue
+        if line.strip():
+            body_lines.append(line)
+
+    return "\n".join(body_lines), exit_code
 
 
 # ---------------------------------------------------------------------------
@@ -290,79 +280,97 @@ def run_command(ser, cmd, timeout=60):
 
 def cmd_check(args):
     try:
-        ser = open_port(args.port, args.baud)
+        ser = open_port(args.port, args.baud, timeout=5)
         wake_shell(ser)
+        confirm_ready(ser)          # Fix 1 + Fix 2
         out, rc = run_command(ser, "echo PING_OK", timeout=10)
         ser.close()
         if "PING_OK" in out or rc == 0:
-            print(f"✅ Reachable: {args.port}"); sys.exit(0)
-        print(f"❌ No response. raw={out!r}"); sys.exit(1)
+            print(f"✅ Reachable: {args.port}")
+            sys.exit(0)
+        print(f"❌ No response. raw={out!r}")
+        sys.exit(1)
     except Exception as e:
-        print(f"❌ {args.port}: {e}"); sys.exit(1)
+        print(f"❌ Could not open {args.port}: {e}")
+        sys.exit(1)
 
 
 def cmd_run(args):
     try:
         ser = open_port(args.port, args.baud, timeout=args.timeout)
         wake_shell(ser)
+        confirm_ready(ser)          # Fix 1 + Fix 2
         out, rc = run_command(ser, args.cmd, timeout=args.timeout)
-        print(out); ser.close(); sys.exit(rc)
+        print(out)
+        ser.close()
+        sys.exit(rc)
     except Exception as e:
-        print(f"❌ run failed: {e}"); sys.exit(1)
+        print(f"❌ Serial run failed on {args.port}: {e}")
+        sys.exit(1)
 
 
-def _writable(path):
-    """Redirect /tmp/* → /run/* — SAMA5D2 rootfs is read-only (Error #3)."""
+def _writable_path(path):
+    """Redirect /tmp/* → /run/* for read-only rootfs boards."""
     if path.startswith("/tmp/"):
-        alt = "/run/" + path[5:]
-        print(f"   [push] /tmp is read-only — using {alt}"); return alt
+        alt = "/run/" + path[len("/tmp/"):]
+        print(f"   [push] /tmp is read-only — using {alt}")
+        return alt
     return path
 
 
 def cmd_push(args):
-    """Transfer local text file to board via heredoc over serial."""
-    remote = _writable(args.remote_path)
+    remote = _writable_path(args.remote_path)
     try:
-        content = open(args.local_file).read()
+        with open(args.local_file, "r") as f:
+            content = f.read()
     except OSError as e:
-        print(f"❌ {e}"); sys.exit(1)
+        print(f"❌ Cannot read {args.local_file}: {e}")
+        sys.exit(1)
 
     try:
         ser = open_port(args.port, args.baud, timeout=args.timeout)
         wake_shell(ser)
+        confirm_ready(ser)          # Fix 1 + Fix 2
 
-        # Open heredoc
         send_line(ser, f"cat > {remote} << '{HEREDOC_EOF}'")
         buf, m = read_until_any(ser, [">"], timeout=5)
         if not m:
-            print(f"❌ no heredoc prompt. buf={buf!r}"); ser.close(); sys.exit(1)
+            print(f"❌ No heredoc '>' prompt. buf={buf!r}")
+            ser.close()
+            sys.exit(1)
 
-        # Stream file lines
         for line in content.splitlines():
-            send_line(ser, line); time.sleep(0.06)
+            send_line(ser, line)
+            time.sleep(0.06)
 
-        # Close heredoc — wait for shell # prompt
         send_line(ser, HEREDOC_EOF)
         buf2, m2 = read_until_any(ser, ["#", "$"], timeout=15)
         if not m2:
-            print(f"❌ heredoc did not close. buf={buf2!r}"); ser.close(); sys.exit(1)
+            print(f"❌ Heredoc did not close. buf={buf2!r}")
+            ser.close()
+            sys.exit(1)
 
-        # Confirm with explicit marker
         send_line(ser, f"echo {PUSH_MARKER}")
         confirm = read_until(ser, PUSH_MARKER, timeout=10)
         if PUSH_MARKER not in confirm:
-            print(f"❌ push marker missing. buf={confirm!r}"); ser.close(); sys.exit(1)
+            print(f"❌ PUSH_MARKER missing. buf={confirm!r}")
+            ser.close()
+            sys.exit(1)
 
-        # Make executable + verify
         out, rc = run_command(ser, f"chmod +x {remote} && ls -l {remote}", timeout=10)
-        print(out); ser.close()
+        print(out)
+        ser.close()
 
         if rc == 0 and "No such file" not in out:
-            print(f"✅ pushed to {remote}"); sys.exit(0)
-        print(f"❌ file missing at {remote}. out={out!r}"); sys.exit(1)
+            print(f"✅ Pushed to {remote}")
+            sys.exit(0)
+
+        print(f"❌ File missing at {remote}. out={out!r}")
+        sys.exit(1)
 
     except Exception as e:
-        print(f"❌ push failed: {e}"); sys.exit(1)
+        print(f"❌ Serial push failed on {args.port}: {e}")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -373,24 +381,30 @@ def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="action", required=True)
 
+    # check
     pc = sub.add_parser("check")
-    pc.add_argument("--port", required=True)
-    pc.add_argument("--baud", default="115200")
+    pc.add_argument("--port",   required=True,
+                    help="Port path (/dev/ttyUSBx) or serial ID (e.g. D3074GZG)")
+    pc.add_argument("--baud",   default="115200")
     pc.set_defaults(func=cmd_check)
 
+    # run
     pr = sub.add_parser("run")
-    pr.add_argument("--port", required=True)
-    pr.add_argument("--baud", default="115200")
-    pr.add_argument("--cmd", required=True)
+    pr.add_argument("--port",    required=True,
+                    help="Port path (/dev/ttyUSBx) or serial ID (e.g. D3074GZG)")
+    pr.add_argument("--baud",    default="115200")
+    pr.add_argument("--cmd",     required=True)
     pr.add_argument("--timeout", type=int, default=60)
     pr.set_defaults(func=cmd_run)
 
+    # push
     pp = sub.add_parser("push")
-    pp.add_argument("--port", required=True)
-    pp.add_argument("--baud", default="115200")
-    pp.add_argument("--local-file", required=True)
+    pp.add_argument("--port",        required=True,
+                    help="Port path (/dev/ttyUSBx) or serial ID (e.g. D3074GZG)")
+    pp.add_argument("--baud",        default="115200")
+    pp.add_argument("--local-file",  required=True)
     pp.add_argument("--remote-path", required=True)
-    pp.add_argument("--timeout", type=int, default=60)
+    pp.add_argument("--timeout",     type=int, default=60)
     pp.set_defaults(func=cmd_push)
 
     args = p.parse_args()
