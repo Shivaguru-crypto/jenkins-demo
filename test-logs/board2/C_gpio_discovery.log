@@ -16,3 +16,20 @@ root@rugged-board-a5d2x-sd1:~#
    [wake_shell] shell confirmed
 4.9.151-linux4sam_5.8+-04825-g17ec695-dirty
 root@rugged-board-a5d2x-sd1:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
+   [wake_shell] shell confirmed
+QX$?
+PC21       export     gpiochip0  unexport
+root@rugged-board-a5d2x-sd1:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
+   [wake_shell] shell confirmed
+X$?
+/dev/gpiochip0
+root@rugged-board-a5d2x-sd1:~# 
+   [wake_shell] sending recovery sequence
+   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# \r\nroot@rugged-board-a5d2x-sd1:~# ___JENKINS_E matched='#'
+   [wake_shell] shell confirmed
+4.9.151-linux4sam_5.8+-04825-g17ec695-dirty
+root@rugged-board-a5d2x-sd1:~# 
