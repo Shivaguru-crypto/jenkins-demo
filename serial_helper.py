@@ -262,7 +262,7 @@ def run_command(ser, cmd, timeout=60):
         ser.write(tagged[i:i+chunk_size].encode())
         time.sleep(0.05)
     ser.write(b"\n")
-
+    raw = read_until(ser, END_MARKER, timeout=timeout)
     exit_code  = 1
     body_lines = []
     cmd_echoed = False
