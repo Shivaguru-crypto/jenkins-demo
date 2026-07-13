@@ -1,2 +1,1 @@
-   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
- Reachable: /dev/ttyUSB0
+Board1 Check Reachable: PASS

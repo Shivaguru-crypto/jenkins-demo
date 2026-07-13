@@ -1,3 +1,1 @@
-   [wake_shell] buf='^C\r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# \r\nroot@rugged-board-a5d2x:~# ___JENKINS_EOF___\r\n-sh matched='#'
-rugged-board-a5d2x
-root@rugged-board-a5d2x:~# 
+Board1 Serial Session: PASS
