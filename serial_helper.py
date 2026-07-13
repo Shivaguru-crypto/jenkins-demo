@@ -137,7 +137,11 @@ def read_until(ser, marker, timeout=30):
 
 
 def send_line(ser, line):
-    ser.write((line + "\n").encode())
+    data = line + "\n"
+    chunk_size = 32
+    for i in range(0, len(data), chunk_size):
+        ser.write(data[i:i+chunk_size].encode())
+        time.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -253,8 +257,11 @@ def confirm_ready(ser, timeout=10):
 
 def run_command(ser, cmd, timeout=60):
     tagged = f"{cmd}; echo {END_MARKER}$?"
-    send_line(ser, tagged)
-    raw = read_until(ser, END_MARKER, timeout=timeout)
+    chunk_size = 32
+    for i in range(0, len(tagged), chunk_size):
+        ser.write(tagged[i:i+chunk_size].encode())
+        time.sleep(0.05)
+    ser.write(b"\n")
 
     exit_code  = 1
     body_lines = []
